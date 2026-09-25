@@ -1,0 +1,30 @@
+{
+  "name": "trace",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "packageManager": "pnpm@10.17.1",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "idb": "^8.0.3",
+    "katex": "^0.16.25",
+    "lucide-react": "^0.468.0",
+    "perfect-freehand": "^1.2.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "reveal.js": "^6.0.2",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@types/katex": "^0.16.7",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.9"
+  }
+}
