@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, ChevronDown, CircleHelp, Eraser, Focus, Frame, Hand, ImagePlus, Maximize2, MousePointer2, PenLine, Redo2, Sigma, Trash2, Type, Undo2, Waypoints } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ChevronDown, CircleHelp, Code2, Eraser, Focus, Frame, Hand, ImagePlus, Maximize2, MousePointer2, PenLine, Redo2, Sigma, Trash2, Type, Undo2, Waypoints } from 'lucide-react'
 import { BoardRenderer } from './BoardRenderer'
 import { createDemoBoard } from './demo'
 import { StoryPanel } from './StoryPanel'
@@ -23,6 +23,7 @@ const tools: { id: Tool; label: string; shortcut: string; icon: typeof MousePoin
   { id: 'select', label: 'Select', shortcut: 'V', icon: MousePointer2 },
   { id: 'hand', label: 'Pan', shortcut: 'H', icon: Hand },
   { id: 'text', label: 'Text', shortcut: 'T', icon: Type },
+  { id: 'code', label: 'Code block', shortcut: 'C', icon: Code2 },
   { id: 'formula', label: 'Formula', shortcut: 'F', icon: Sigma },
   { id: 'image', label: 'Image', shortcut: 'I', icon: ImagePlus },
   { id: 'pen', label: 'Pen', shortcut: 'P', icon: PenLine },
@@ -150,7 +151,7 @@ export default function App() {
     const item = state.board.items[id]
     if (newItemIds.current.has(id)) {
       newItemIds.current.delete(id)
-      const empty = item?.type === 'text' ? !item.text.trim() : item?.type === 'formula' ? !item.latex.trim() : false
+      const empty = item?.type === 'text' ? !item.text.trim() : item?.type === 'code' ? !item.code.trim() : item?.type === 'formula' ? !item.latex.trim() : false
       if (empty) { state.discardNewItem(id); return }
     }
     state.setEditing(null)
@@ -185,7 +186,7 @@ export default function App() {
       if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); removeSelection(); return }
       if (event.key === 'Escape') { state.setSelection(null); state.setTool('select'); return }
       if (!mod && !event.altKey) {
-        const map: Record<string, Tool> = { v: 'select', h: 'hand', t: 'text', f: 'formula', i: 'image', p: 'pen', e: 'eraser', r: 'frame', l: 'edge' }
+        const map: Record<string, Tool> = { v: 'select', h: 'hand', t: 'text', c: 'code', f: 'formula', i: 'image', p: 'pen', e: 'eraser', r: 'frame', l: 'edge' }
         const next = map[event.key.toLowerCase()]
         if (next) { event.preventDefault(); state.setTool(next); if (next === 'image') fileInput.current?.click() }
       }
@@ -203,11 +204,13 @@ export default function App() {
     const w = worldPoint(event)
     if (event.button === 1 || space.current || state.tool === 'hand') { gesture.current = { kind: 'pan', x: p.x, y: p.y, viewport: state.viewport, moved: false }; return }
     state.setSelection(null)
-    if (state.tool === 'text' || state.tool === 'formula') {
+    if (state.tool === 'text' || state.tool === 'formula' || state.tool === 'code') {
       const id = uid()
       const item: CanvasItem = state.tool === 'text'
         ? { id, type: 'text', text: '', fontSize: 20, transform: { x: w.x, y: w.y, width: 340, height: 100 } }
-        : { id, type: 'formula', latex: '', transform: { x: w.x, y: w.y, width: 390, height: 74 } }
+        : state.tool === 'code'
+          ? { id, type: 'code', code: '', language: 'javascript', transform: { x: w.x, y: w.y, width: 480, height: 260 } }
+          : { id, type: 'formula', latex: '', transform: { x: w.x, y: w.y, width: 390, height: 74 } }
       state.change(b => { b.items[id] = item }); newItemIds.current.add(id); state.setSelection({ kind: 'item', id }); state.setTool('select'); gesture.current = { kind: 'createEdit', id }
     } else if (state.tool === 'frame') {
       const id = uid()
@@ -398,12 +401,13 @@ export default function App() {
   const contentChange = (id: Id, value: string) => boardState().updateGesture(b => {
     const item = b.items[id]
     if (item?.type === 'text') item.text = value
+    else if (item?.type === 'code') item.code = value
     else if (item?.type === 'formula') item.latex = value
     else if (b.frames[id]) b.frames[id].title = value
   })
   const objectDoubleClick = (kind: 'item' | 'frame', id: Id) => {
     const item = boardState().board.items[id]
-    if (kind === 'frame' || item?.type === 'text' || item?.type === 'formula') { boardState().beginGesture(); boardState().setEditing(id) }
+    if (kind === 'frame' || item?.type === 'text' || item?.type === 'code' || item?.type === 'formula') { boardState().beginGesture(); boardState().setEditing(id) }
   }
   const onDrop = (event: React.DragEvent) => {
     event.preventDefault()
@@ -442,14 +446,14 @@ export default function App() {
   if (!ready) return <div className="loading">Opening board…</div>
   return <div className={`app tool-${tool}`}>
     <div className="canvas-surface" ref={root} onPointerDown={onBackgroundDown} onDrop={onDrop} onDragOver={e => e.preventDefault()}>
-      <BoardRenderer board={board} viewport={viewport} mode="edit" selection={selection} multiSelection={multiSelection} editing={editing} onObjectDown={onObjectDown} onObjectDoubleClick={objectDoubleClick} onResizeDown={onResizeDown} onEdgeHandleDown={(event, id) => { gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }) }} onContentChange={contentChange} onDoneEditing={finishEditing} />
+      <BoardRenderer board={board} viewport={viewport} mode="edit" selection={selection} multiSelection={multiSelection} editing={editing} onObjectDown={onObjectDown} onObjectDoubleClick={objectDoubleClick} onResizeDown={onResizeDown} onEdgeHandleDown={(event, id) => { gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }) }} onContentChange={contentChange} onCodeLanguageChange={(id, language) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'code') item.language = language })} onDoneEditing={finishEditing} />
       {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
-      {!Object.keys(board.items).length && !Object.keys(board.frames).length && <div className="empty-hint">Choose Text, Formula, Image, or Pen to begin</div>}
+      {!Object.keys(board.items).length && !Object.keys(board.frames).length && <div className="empty-hint">Choose Text, Code, Formula, Image, or Pen to begin</div>}
       {connector && <svg className="connector-preview"><line x1={(board.frames[connector.from]?.bounds.x || 0) * viewport.zoom + viewport.x} y1={((board.frames[connector.from]?.bounds.y || 0)-20) * viewport.zoom + viewport.y} x2={connector.x * viewport.zoom + viewport.x} y2={connector.y * viewport.zoom + viewport.y} /></svg>}
     </div>
 
     <header className="topbar"><div className="board-identity"><span className="brand-mark">◌</span><div className="board-menu-anchor">{renamingBoard ? <InlineRename value={board.title} label="Board title" className="board-name-input" onCommit={title => { boardState().change(b => { b.title = title }); setBoardList(list => list.map(entry => entry.id === board.id ? { ...entry, title } : entry)) }} onClose={() => setRenamingBoard(false)} /> : <button onClick={() => setBoardMenu(value => !value)} className="board-name">{board.title}<ChevronDown size={13} /></button>}{boardMenu && <div className="board-menu"><div className="menu-caption">BOARDS</div>{boardList.map(entry => <button key={entry.id} className={entry.id === board.id ? 'current' : ''} onClick={() => void openBoard(entry.id)}>{entry.title}</button>)}<div className="menu-rule" /><button onClick={() => void newBoard()}>+ New blank board</button><button onClick={renameBoard}>Rename current board</button></div>}</div><span className="save-state">{saveState}</span></div><div className="top-actions"><button className={`story-toggle ${showStory ? 'active' : ''}`} onClick={() => setShowStory(value => !value)}>Story</button><button title="How to use" onClick={() => setShowHelp(true)}><CircleHelp size={17} /></button></div></header>
-    <div className="toolbar" role="toolbar" aria-label="Board tools">{tools.map((entry, index) => <div key={entry.id} className={index === 2 || index === 7 ? 'tool-divider' : ''}><button title={`${entry.label} · ${entry.shortcut}`} aria-label={entry.label} className={tool === entry.id ? 'active' : ''} onClick={() => { boardState().setTool(entry.id); if (entry.id === 'image') fileInput.current?.click() }}><entry.icon size={19} strokeWidth={1.75} /></button></div>)}</div>
+    <div className="toolbar" role="toolbar" aria-label="Board tools">{tools.map((entry, index) => <div key={entry.id} className={index === 2 || index === 8 ? 'tool-divider' : ''}><button title={`${entry.label} · ${entry.shortcut}`} aria-label={entry.label} className={tool === entry.id ? 'active' : ''} onClick={() => { boardState().setTool(entry.id); if (entry.id === 'image') fileInput.current?.click() }}><entry.icon size={19} strokeWidth={1.75} /></button></div>)}</div>
     {!showStory && <div className="context-controls">
       {selection?.kind === 'item' && board.items[selection.id]?.type === 'text' && <><button title="Toggle bold" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'text') item.bold = !item.bold })}>B</button><button title="Smaller text" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'text') item.fontSize = Math.max(12, item.fontSize-2) })}>A−</button><button title="Larger text" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'text') item.fontSize = Math.min(48, item.fontSize+2) })}>A+</button></>}
       {selection?.kind === 'item' && board.items[selection.id]?.type === 'drawing' && <><button title="Thinner stroke" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'drawing') item.lineWidth = Math.max(1, item.lineWidth-1) })}>−</button><button title="Thicker stroke" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'drawing') item.lineWidth = Math.min(12, item.lineWidth+1) })}>+</button></>}
@@ -457,10 +461,10 @@ export default function App() {
     </div>}
     <div className="view-controls"><button title="View back" disabled={!viewPast.length} onClick={() => boardState().viewBack()}><ArrowLeft size={17} /></button><button title="View forward" disabled={!viewFuture.length} onClick={() => boardState().viewForward()}><ArrowRight size={17} /></button><span className="control-separator" /><button title="Fit board" onClick={fitBoard}><Maximize2 size={17} /></button><button title="Zoom out" onClick={() => { const s = boardState(); s.pushView(); s.setViewport(zoomAt(s.viewport, window.innerWidth/2, window.innerHeight/2, clampZoom(s.viewport.zoom*.8))) }}>−</button><span className="zoom-label">{Math.round(viewport.zoom*100)}%</span><button title="Zoom in" onClick={() => { const s = boardState(); s.pushView(); s.setViewport(zoomAt(s.viewport, window.innerWidth/2, window.innerHeight/2, clampZoom(s.viewport.zoom/.8))) }}>+</button></div>
     <div className="history-controls"><button title="Undo · Cmd/Ctrl Z" disabled={!past.length} onClick={() => boardState().undo()}><Undo2 size={17} /></button><button title="Redo · Cmd/Ctrl Shift Z" disabled={!future.length} onClick={() => boardState().redo()}><Redo2 size={17} /></button></div>
-    <div className="board-hint">{tool === 'frame' ? 'Drag to mark a region' : tool === 'edge' ? 'Drag from a frame title to another frame' : tool === 'pen' ? 'Draw directly on the board' : tool === 'eraser' ? 'Click a stroke to erase' : 'Drag empty space to select · Space + drag to pan'}</div>
+    <div className="board-hint">{tool === 'frame' ? 'Drag to mark a region' : tool === 'edge' ? 'Drag from a frame title to another frame' : tool === 'pen' ? 'Draw directly on the board' : tool === 'eraser' ? 'Click a stroke to erase' : tool === 'code' ? 'Click to place a code block' : 'Drag empty space to select · Space + drag to pan'}</div>
     <input ref={fileInput} className="file-input" type="file" accept="image/*" onChange={e => { const file = e.target.files?.[0]; if (file) void addImage(file, imagePosition || undefined); e.target.value = ''; setImagePosition(null) }} />
     {showStory && <StoryPanel board={board} viewport={viewport} activeStoryId={activeStoryId} onStoryChange={setActiveStoryId} onPresent={setPresentingStoryId} onClose={() => setShowStory(false)} onFocusFrame={(id, bounds) => focus(bounds || board.frames[id]?.bounds || null)} />}
     {presentingStoryId && board.stories[presentingStoryId]?.steps.length ? <Suspense fallback={<div className="loading presentation-loading">Opening story…</div>}><Presentation board={board} story={board.stories[presentingStoryId]} onClose={() => { setPresentingStoryId(null); if (document.fullscreenElement) void document.exitFullscreen() }} /></Suspense> : null}
-    {showHelp && <div className="modal-backdrop" onPointerDown={e => e.stopPropagation()}><div className="help-modal"><button className="modal-close" onClick={() => setShowHelp(false)}>×</button><span className="eyebrow">TRACE</span><h2>Think on the board.</h2><p>Place notes, images, formulas, and sketches anywhere. Draw a frame when a local idea has a name. Frames mark space; moving one never moves its content.</p><div className="help-grid"><span>Select several</span><span>Drag an empty part of the board</span><span>Move around</span><span>Space + drag, or trackpad scroll</span><span>Zoom</span><span>Pinch, mouse wheel, or zoom controls</span><span>Edit content</span><span>Double-click; click elsewhere to finish</span><span>Formula source</span><span>Type LaTeX with a live preview</span><span>Connect frames</span><span>Drag ↗ beside a frame title</span><span>Present</span><span>Open Story, build a path, then Present</span><span>Undo / Redo</span><span>⌘/Ctrl Z · ⌘/Ctrl Shift Z</span></div><button className="done-button" onClick={() => setShowHelp(false)}>Return to board</button></div></div>}
+    {showHelp && <div className="modal-backdrop" onPointerDown={e => e.stopPropagation()}><div className="help-modal"><button className="modal-close" onClick={() => setShowHelp(false)}>×</button><span className="eyebrow">TRACE</span><h2>Think on the board.</h2><p>Place notes, code, images, formulas, and sketches anywhere. Draw a frame when a local idea has a name. Frames mark space; moving one never moves its content.</p><div className="help-grid"><span>Select several</span><span>Drag an empty part of the board</span><span>Move around</span><span>Space + drag, or trackpad scroll</span><span>Zoom</span><span>Pinch, mouse wheel, or zoom controls</span><span>Edit content</span><span>Double-click; click elsewhere to finish</span><span>Code block</span><span>Press C, click the board, then choose a language</span><span>Formula source</span><span>Type LaTeX with a live preview</span><span>Connect frames</span><span>Drag ↗ beside a frame title</span><span>Present</span><span>Open Story, build a path, then Present</span><span>Undo / Redo</span><span>⌘/Ctrl Z · ⌘/Ctrl Shift Z</span></div><button className="done-button" onClick={() => setShowHelp(false)}>Return to board</button></div></div>}
   </div>
 }

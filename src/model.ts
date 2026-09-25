@@ -3,17 +3,18 @@ export type Transform = { x: number; y: number; width: number; height: number; r
 export type StrokePoint = { x: number; y: number; pressure?: number }
 type BaseItem = { id: Id; transform: Transform }
 export type TextItem = BaseItem & { type: 'text'; text: string; fontSize: number; bold?: boolean }
+export type CodeItem = BaseItem & { type: 'code'; code: string; language: string }
 export type FormulaItem = BaseItem & { type: 'formula'; latex: string }
 export type ImageItem = BaseItem & { type: 'image'; assetId: Id; alt?: string }
 export type DrawingItem = BaseItem & { type: 'drawing'; points: StrokePoint[]; lineWidth: number }
-export type CanvasItem = TextItem | FormulaItem | ImageItem | DrawingItem
+export type CanvasItem = TextItem | CodeItem | FormulaItem | ImageItem | DrawingItem
 export type Frame = { id: Id; title?: string; bounds: Transform }
 export type FrameEdge = { id: Id; from: Id; to: Id }
 export type StoryStep = { id: Id; frameId: Id; viewport?: Transform; visibleItems?: Id[]; revealItems?: Id[]; notes?: string }
 export type Story = { id: Id; title: string; steps: StoryStep[] }
 export type Board = { id: Id; version: number; title: string; items: Record<Id, CanvasItem>; frames: Record<Id, Frame>; frameEdges: Record<Id, FrameEdge>; stories: Record<Id, Story> }
 export type Viewport = { x: number; y: number; zoom: number }
-export type Tool = 'select' | 'hand' | 'text' | 'formula' | 'image' | 'pen' | 'eraser' | 'frame' | 'edge'
+export type Tool = 'select' | 'hand' | 'text' | 'code' | 'formula' | 'image' | 'pen' | 'eraser' | 'frame' | 'edge'
 export type Selection = { kind: 'item' | 'frame' | 'edge'; id: Id } | null
 
 export const uid = () => crypto.randomUUID()

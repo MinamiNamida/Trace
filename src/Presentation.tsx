@@ -1,44 +1,92 @@
 import { ArrowLeft, ArrowRight, Maximize2, Move, Printer, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import Reveal from 'reveal.js'
 import Notes from 'reveal.js/plugin/notes'
 import 'reveal.js/reveal.css'
 import { BoardRenderer } from './BoardRenderer'
 import { zoomAt } from './model'
-import type { Board, Story, Viewport } from './model'
+import type { Board, Id, Story, StoryStep, Viewport } from './model'
 import { cameraFor, visibleItemsForStep } from './storyView'
 import type { RevealApi } from 'reveal.js'
 
-type Flight = { viewport: Viewport; moving: boolean }
+const StaticBoard = memo(BoardRenderer)
+
+const cameraTransform = (camera: Viewport) => `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})`
+
+function setItemVisibility(container: Element, visibleItems?: Id[]) {
+  const visible = visibleItems && new Set(visibleItems)
+  container.querySelectorAll<HTMLElement | SVGElement>('[data-item-id]').forEach(item => {
+    item.style.visibility = !visible || visible.has(item.dataset.itemId || '') ? 'visible' : 'hidden'
+  })
+}
+
+function syncSlideVisibility(slide: Element | null, step: StoryStep, printMode: boolean) {
+  if (!slide || printMode || !step.revealItems?.length) return
+  const reveal = new Set(step.revealItems)
+  const shown = new Set(Array.from(slide.querySelectorAll<HTMLElement>('.story-fragment.visible'), fragment => fragment.dataset.item))
+  slide.querySelectorAll<HTMLElement | SVGElement>('[data-item-id]').forEach(item => {
+    const id = item.dataset.itemId || ''
+    if (reveal.has(id)) item.style.visibility = shown.has(id) ? 'visible' : 'hidden'
+  })
+}
+
+const StorySlide = memo(function StorySlide({ board, step, size, printMode }: { board: Board; step: StoryStep; size: { width: number; height: number }; printMode: boolean }) {
+  return <section data-story-step={step.id}><div className="presentation-viewport"><BoardRenderer board={board} viewport={cameraFor(board, step, size.width, size.height)} visibleItems={visibleItemsForStep(board, step, step.revealItems?.length || 0)} hiddenItems={printMode ? undefined : step.revealItems} mode="readonly" /></div>{step.revealItems?.map((id, order) => <span key={id} className="fragment story-fragment" data-fragment-index={order} data-item={id} aria-hidden="true" />)}{step.notes && <aside className="notes">{step.notes}</aside>}</section>
+})
 
 export function Presentation({ board, story, onClose }: { board: Board; story: Story; onClose: () => void }) {
   const printMode = new URLSearchParams(window.location.search).has('print-pdf')
   const root = useRef<HTMLDivElement>(null)
+  const flightRoot = useRef<HTMLDivElement>(null)
   const deck = useRef<RevealApi | null>(null)
   const [size, setSize] = useState({ width: window.innerWidth, height: window.innerHeight })
+  const [initialCamera] = useState(() => cameraFor(board, story.steps[0], window.innerWidth, window.innerHeight))
   const indexRef = useRef(0)
-  const currentCamera = useRef<Viewport>(cameraFor(board, story.steps[0], window.innerWidth, window.innerHeight))
+  const currentCamera = useRef<Viewport>(initialCamera)
   const flightTimer = useRef(0)
   const flightFrame = useRef(0)
   const [index, setIndex] = useState(0)
   const [revealed, setRevealed] = useState<Record<string, number>>({})
-  const [flight, setFlight] = useState<Flight | null>(null)
   const [exploring, setExploring] = useState(false)
   const [exploreViewport, setExploreViewport] = useState(currentCamera.current)
   const drag = useRef<{ x: number; y: number; camera: Viewport } | null>(null)
   const pinch = useRef<Viewport | null>(null)
 
-  const animateCamera = (from: Viewport, to: Viewport) => {
+  const animateCamera = (from: Viewport, to: Viewport, visibleItems?: Id[]) => {
     clearTimeout(flightTimer.current)
     cancelAnimationFrame(flightFrame.current)
-    setFlight({ viewport: from, moving: false })
+    const surface = flightRoot.current
+    const world = surface?.querySelector<HTMLElement>('.board-world')
+    if (!surface || !world) return
+    let start = from
+    if (surface.style.display !== 'none' && surface.classList.contains('moving')) {
+      const transform = getComputedStyle(world).transform
+      if (transform !== 'none') {
+        const matrix = new DOMMatrixReadOnly(transform)
+        start = { x: matrix.m41, y: matrix.m42, zoom: matrix.a }
+      }
+    }
+    setItemVisibility(surface, visibleItems)
+    surface.style.display = 'block'
+    surface.classList.remove('moving')
+    world.style.transform = cameraTransform(start)
+    world.style.setProperty('--title-scale', String(Math.max(1, Math.min(2.8, .85 / to.zoom))))
+    world.style.setProperty('--content-opacity', String(Math.max(.24, Math.min(1, (to.zoom - .22) / .55))))
+    world.classList.remove('detail-far', 'detail-mid', 'detail-near')
+    world.classList.add(to.zoom < .33 ? 'detail-far' : to.zoom < .72 ? 'detail-mid' : 'detail-near')
     flightFrame.current = requestAnimationFrame(() => {
-      flightFrame.current = requestAnimationFrame(() => setFlight({ viewport: to, moving: true }))
+      flightFrame.current = requestAnimationFrame(() => {
+        surface.classList.add('moving')
+        world.style.transform = cameraTransform(to)
+        flightTimer.current = window.setTimeout(() => { surface.style.display = 'none'; surface.classList.remove('moving') }, 520)
+      })
     })
-    flightTimer.current = window.setTimeout(() => setFlight(null), 540)
   }
   const enterExplore = () => {
     if (exploring) return
+    clearTimeout(flightTimer.current)
+    cancelAnimationFrame(flightFrame.current)
+    if (flightRoot.current) flightRoot.current.style.display = 'none'
     setExploreViewport(currentCamera.current)
     setExploring(true)
     deck.current?.configure({ keyboard: false })
@@ -46,11 +94,19 @@ export function Presentation({ board, story, onClose }: { board: Board; story: S
   const resume = () => {
     if (!exploring) return
     const target = cameraFor(board, story.steps[index], window.innerWidth, window.innerHeight)
-    animateCamera(exploreViewport, target)
+    const count = deck.current?.getCurrentSlide()?.querySelectorAll('.story-fragment.visible').length || 0
+    animateCamera(exploreViewport, target, visibleItemsForStep(board, story.steps[index], count))
     currentCamera.current = target
     setExploring(false)
     deck.current?.configure({ keyboard: true })
   }
+
+  useLayoutEffect(() => {
+    root.current?.querySelectorAll<HTMLElement>('section[data-story-step]').forEach(slide => {
+      const step = story.steps.find(value => value.id === slide.dataset.storyStep)
+      if (step) syncSlideVisibility(slide, step, printMode)
+    })
+  }, [size, story, printMode])
 
   useEffect(() => {
     if (!root.current) return
@@ -64,22 +120,28 @@ export function Presentation({ board, story, onClose }: { board: Board; story: S
       const event = raw as Event & { indexh?: number }
       const next = Math.max(0, Math.min(story.steps.length - 1, event.indexh ?? 0))
       const target = cameraFor(board, story.steps[next], window.innerWidth, window.innerHeight)
-      animateCamera(currentCamera.current, target)
+      const section = instance.getCurrentSlide()
+      const count = section?.querySelectorAll('.story-fragment.visible').length || 0
+      syncSlideVisibility(section, story.steps[next], printMode)
+      if (next !== indexRef.current) animateCamera(currentCamera.current, target, visibleItemsForStep(board, story.steps[next], count))
       currentCamera.current = target
       indexRef.current = next
       setIndex(next)
-      const section = instance.getCurrentSlide()
-      if (section) setRevealed(old => ({ ...old, [story.steps[next].id]: section.querySelectorAll('.story-fragment.visible').length }))
+      setRevealed(old => ({ ...old, [story.steps[next].id]: count }))
     }
     const onFragment = () => {
       const section = instance.getCurrentSlide()
       const stepId = section?.getAttribute('data-story-step')
-      if (section && stepId) setRevealed(old => ({ ...old, [stepId]: section.querySelectorAll('.story-fragment.visible').length }))
+      const step = story.steps.find(value => value.id === stepId)
+      if (section && step) {
+        syncSlideVisibility(section, step, printMode)
+        setRevealed(old => ({ ...old, [step.id]: section.querySelectorAll('.story-fragment.visible').length }))
+      }
     }
     instance.on('slidechanged', onSlide)
     instance.on('fragmentshown', onFragment)
     instance.on('fragmenthidden', onFragment)
-    void instance.initialize()
+    void instance.initialize().then(() => syncSlideVisibility(instance.getCurrentSlide(), story.steps[indexRef.current], printMode))
     const resize = () => {
       instance.configure({ width: window.innerWidth, height: window.innerHeight })
       instance.layout()
@@ -170,8 +232,8 @@ export function Presentation({ board, story, onClose }: { board: Board; story: S
   }
 
   return <div className="presentation-shell">
-    <div className="reveal" ref={root}><div className="slides">{story.steps.map(step => <section key={step.id} data-story-step={step.id}><div className="presentation-viewport"><BoardRenderer board={board} viewport={cameraFor(board, step, size.width, size.height)} visibleItems={visibleItemsForStep(board, step, printMode ? step.revealItems?.length || 0 : revealed[step.id] || 0)} mode="readonly" /></div>{step.revealItems?.map((id, order) => <span key={id} className="fragment story-fragment" data-fragment-index={order} aria-hidden="true" />)}{step.notes && <aside className="notes">{step.notes}</aside>}</section>)}</div></div>
-    {flight && !exploring && <div className={`presentation-flight ${flight.moving ? 'moving' : ''}`}><BoardRenderer board={board} viewport={flight.viewport} mode="readonly" /></div>}
+    <div className="reveal" ref={root}><div className="slides">{story.steps.map(step => <StorySlide key={step.id} board={board} step={step} size={size} printMode={printMode} />)}</div></div>
+    <div className="presentation-flight" ref={flightRoot} style={{ display: 'none' }}><StaticBoard board={board} viewport={initialCamera} mode="readonly" /></div>
     {exploring && <div className="presentation-explore" onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={() => { drag.current = null }}><BoardRenderer board={board} viewport={exploreViewport} mode="readonly" /></div>}
     <div className="presentation-top"><span>{story.title}</span><span className="presentation-count">{String(index + 1).padStart(2, '0')} / {String(story.steps.length).padStart(2, '0')}{!!story.steps[index].revealItems?.length && ` · ${revealed[story.steps[index].id] || 0}/${story.steps[index].revealItems?.length}`}</span><button onClick={onClose} title="Close presentation"><X size={18} /></button></div>
     <div className="presentation-bottom"><button title="Previous" disabled={(index === 0 && !(revealed[story.steps[0].id] || 0)) || exploring} onClick={() => deck.current?.prev()}><ArrowLeft size={18} /></button><button title="Next" disabled={(index >= story.steps.length-1 && (revealed[story.steps[index].id] || 0) >= (story.steps[index].revealItems?.length || 0)) || exploring} onClick={() => deck.current?.next()}><ArrowRight size={18} /></button><span className="presentation-divider" /><button title={exploring ? 'Resume story' : 'Explore board · Esc'} onClick={exploring ? resume : enterExplore}><Move size={17} /> {exploring ? 'Resume' : 'Explore'}</button><button title="Speaker view · S" onClick={() => (deck.current?.getPlugin('notes') as { open?: () => void } | undefined)?.open?.()}>Notes</button><button title="Print or save as PDF" onClick={() => { const url = new URL(window.location.href); url.searchParams.set('board', board.id); url.searchParams.set('story', story.id); url.searchParams.set('print-pdf', ''); window.open(url.href, '_blank', 'noopener') }}><Printer size={16} /></button><button title="Fullscreen" onClick={() => void document.documentElement.requestFullscreen?.()}><Maximize2 size={16} /></button></div>

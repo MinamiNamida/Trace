@@ -23,7 +23,7 @@ function frameOrder(board: Board): Frame[] {
 }
 
 function itemLabel(item: CanvasItem) {
-  const value = item.type === 'text' ? item.text : item.type === 'formula' ? item.latex : item.type === 'image' ? item.alt || 'Image' : 'Drawing'
+  const value = item.type === 'text' ? item.text : item.type === 'code' ? item.code : item.type === 'formula' ? item.latex : item.type === 'image' ? item.alt || 'Image' : 'Drawing'
   return `${item.type[0].toUpperCase() + item.type.slice(1)} · ${value.replace(/\s+/g, ' ').trim().slice(0, 48) || 'Untitled'}`
 }
 

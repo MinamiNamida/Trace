@@ -1,6 +1,6 @@
 # Trace
 
-Trace is a local-first spatial board for learning notes, formulas, images, sketches, named regions, and stories. It uses React, TypeScript, DOM/SVG, KaTeX, perfect-freehand, Zustand, IndexedDB, and Reveal.js.
+Trace is a local-first spatial board for learning notes, code, formulas, images, sketches, named regions, and stories. It uses React, TypeScript, DOM/SVG, KaTeX, highlight.js, perfect-freehand, Zustand, IndexedDB, and Reveal.js.
 
 Run with `pnpm install` and `pnpm dev`. Open the local URL shown by Vite. A Fourier Transform study board is created on first launch; subsequent edits save in IndexedDB. Image files live in a separate IndexedDB asset store rather than the Board JSON.
 
@@ -9,7 +9,8 @@ Use the board title menu to create a blank board or switch between boards saved 
 ## Working on the board
 
 - Drag empty board space to select several items. Drag with Space or the Hand tool to pan. Trackpad scroll pans; pinch, mouse wheel, and the zoom controls zoom around the cursor.
-- Double-click text, formulas, or frame titles to edit. New text and formulas begin editing immediately. Click elsewhere or press Cmd/Ctrl Enter to finish. Empty new items are discarded.
+- Double-click text, code blocks, formulas, or frame titles to edit. New text, code blocks, and formulas begin editing immediately. Click elsewhere or press Cmd/Ctrl Enter to finish. Empty new items are discarded.
+- Choose **Code block** or press **C**, then click the board. Select a language in the editor to highlight the code on the board and in presentations.
 - Formula editing takes LaTeX source directly and shows a live KaTeX preview.
 - Use Frame to drag a named region. A frame stores bounds only, so moving or deleting it leaves all canvas items in place.
 - Drag the subtle handle beside a frame title to another frame to create an edge. Select an edge and press Delete to remove it.
@@ -20,7 +21,7 @@ Use the board title menu to create a blank board or switch between boards saved 
 
 Open **Story** at the top right. Create an empty story or build one from the current frame order, then add, repeat, remove, or reorder frame steps. A step can use its frame bounds or a captured board viewport. Story steps only reference the Board; no canvas content is copied. You can keep multiple Stories for different explanations, duplicate a Story, or delete one without changing the Board.
 
-Select a step and choose **Reveal** to set items that touch its frame to visible, reveal in order, or hidden. The reveal list controls the order of fragment advances. Choose **Notes** to write speaker notes for that step. Both settings reference existing Board items; they do not make slide copies.
+Select a step and choose **Reveal** to set items that touch its frame to visible, reveal in order, or hidden. The reveal list controls the order of fragment advances. Choose **Notes** to write speaker notes for that step. Reveal settings reference existing Board items; they do not make slide copies.
 
 Choose **Present** to run the Story with Reveal.js. Arrow keys or the on-screen controls advance through reveals and steps. Press **S** or choose **Notes** to open the speaker view. Press Esc or choose **Explore** to pan and zoom freely, then resume the current step. The same `BoardRenderer` renders editor and presentation content.
 

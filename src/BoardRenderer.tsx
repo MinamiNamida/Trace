@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import katex from 'katex'
 import getStroke from 'perfect-freehand'
+import { CodeBlock } from './CodeBlock'
 import { unionBounds } from './model'
 import type { Board, CanvasItem, DrawingItem, Frame, Id, Selection, Transform, Viewport } from './model'
 import { loadAsset } from './storage'
@@ -40,6 +41,7 @@ type Props = {
   viewport: Viewport
   mode: 'edit' | 'readonly'
   visibleItems?: Id[]
+  hiddenItems?: Id[]
   assetUrls?: Record<Id, string>
   selection?: Selection
   multiSelection?: Id[]
@@ -49,12 +51,14 @@ type Props = {
   onResizeDown?: (event: React.PointerEvent, kind: 'item' | 'frame', id: Id) => void
   onEdgeHandleDown?: (event: React.PointerEvent, id: Id) => void
   onContentChange?: (id: Id, value: string) => void
+  onCodeLanguageChange?: (id: Id, language: string) => void
   onDoneEditing?: () => void
 }
 
-function ItemBody({ item, editing, onContentChange, onDoneEditing, assetUrls }: { item: CanvasItem; editing: boolean; onContentChange: (value: string) => void; onDoneEditing: () => void; assetUrls?: Record<Id, string> }) {
+function ItemBody({ item, editing, onContentChange, onCodeLanguageChange, onDoneEditing, assetUrls }: { item: CanvasItem; editing: boolean; onContentChange: (value: string) => void; onCodeLanguageChange: (value: string) => void; onDoneEditing: () => void; assetUrls?: Record<Id, string> }) {
   if (item.type === 'image') return <ImageContent assetId={item.assetId} alt={item.alt} assetUrl={assetUrls?.[item.assetId]} />
   if (item.type === 'formula') return <FormulaContent latex={item.latex} editing={editing} onChange={onContentChange} onDone={onDoneEditing} />
+  if (item.type === 'code') return <CodeBlock item={item} editing={editing} onCodeChange={onContentChange} onLanguageChange={onCodeLanguageChange} onDone={onDoneEditing} />
   if (item.type === 'text') return editing ? (
     <textarea autoFocus spellCheck={false} value={item.text} onChange={e => onContentChange(e.target.value)} onBlur={onDoneEditing} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); onDoneEditing() } e.stopPropagation() }} style={{ fontSize: item.fontSize, fontWeight: item.bold ? 600 : 400 }} />
   ) : <div className="text-content" style={{ fontSize: item.fontSize, fontWeight: item.bold ? 600 : 400 }}>{item.text}</div>
@@ -67,19 +71,20 @@ function edgePoints(a: Frame, b: Frame) {
   const vertical = Math.abs(bc.y - ac.y) > Math.abs(bc.x - ac.x)
   if (vertical) {
     const down = bc.y > ac.y
-    return { x1: ac.x, y1: down ? a.bounds.y + a.bounds.height : a.bounds.y, x2: bc.x, y2: down ? b.bounds.y : b.bounds.y + b.bounds.height }
+    return { x1: ac.x, y1: down ? a.bounds.y + a.bounds.height : a.bounds.y, x2: bc.x, y2: down ? b.bounds.y : b.bounds.y + b.bounds.height, vertical }
   }
   const right = bc.x > ac.x
-  return { x1: right ? a.bounds.x + a.bounds.width : a.bounds.x, y1: ac.y, x2: right ? b.bounds.x : b.bounds.x + b.bounds.width, y2: bc.y }
+  return { x1: right ? a.bounds.x + a.bounds.width : a.bounds.x, y1: ac.y, x2: right ? b.bounds.x : b.bounds.x + b.bounds.width, y2: bc.y, vertical }
 }
 
 const rectStyle = (t: Transform): React.CSSProperties => ({ left: t.x, top: t.y, width: t.width, height: t.height, transform: t.rotation ? `rotate(${t.rotation}deg)` : undefined })
 
-export function BoardRenderer({ board, viewport, mode, visibleItems, assetUrls, selection, multiSelection = [], editing, onObjectDown, onObjectDoubleClick, onResizeDown, onEdgeHandleDown, onContentChange, onDoneEditing }: Props) {
+export function BoardRenderer({ board, viewport, mode, visibleItems, hiddenItems, assetUrls, selection, multiSelection = [], editing, onObjectDown, onObjectDoubleClick, onResizeDown, onEdgeHandleDown, onContentChange, onCodeLanguageChange, onDoneEditing }: Props) {
   const editable = mode === 'edit'
   const detail = viewport.zoom < .33 ? 'far' : viewport.zoom < .72 ? 'mid' : 'near'
   const frames = Object.values(board.frames)
   const items = Object.values(board.items).filter(item => !visibleItems || visibleItems.includes(item.id))
+  const hidden = new Set(hiddenItems)
   return <div className={`board-world detail-${detail}`} style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`, '--title-scale': Math.max(1, Math.min(2.8, .85 / viewport.zoom)), '--content-opacity': Math.max(.24, Math.min(1, (viewport.zoom - .22) / .55)) } as React.CSSProperties}>
     <svg className="world-svg" overflow="visible">
       <defs><marker id="edge-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M 0 0 L 7 3.5 L 0 7" fill="none" stroke="currentColor" strokeWidth="1" /></marker></defs>
@@ -87,17 +92,19 @@ export function BoardRenderer({ board, viewport, mode, visibleItems, assetUrls, 
         const a = board.frames[edge.from], b = board.frames[edge.to]
         if (!a || !b) return null
         const p = edgePoints(a, b)
-        const d = `M ${p.x1} ${p.y1} C ${(p.x1 + p.x2) / 2} ${p.y1}, ${(p.x1 + p.x2) / 2} ${p.y2}, ${p.x2} ${p.y2}`
+        const d = p.vertical
+          ? `M ${p.x1} ${p.y1} C ${p.x1} ${(p.y1 + p.y2) / 2}, ${p.x2} ${(p.y1 + p.y2) / 2}, ${p.x2} ${p.y2}`
+          : `M ${p.x1} ${p.y1} C ${(p.x1 + p.x2) / 2} ${p.y1}, ${(p.x1 + p.x2) / 2} ${p.y2}, ${p.x2} ${p.y2}`
         return <g key={edge.id} className={`frame-edge ${selection?.id === edge.id ? 'selected' : ''}`}><path d={d} markerEnd="url(#edge-arrow)" /><path className="edge-hit" d={d} onPointerDown={editable ? e => onObjectDown?.(e, 'edge', edge.id) : undefined} /></g>
       })}</g>
-      <g className="drawing-layer">{items.filter((i): i is DrawingItem => i.type === 'drawing').map(item => <g key={item.id} data-item-id={item.id} transform={`translate(${item.transform.x} ${item.transform.y})`} onPointerDown={editable ? e => onObjectDown?.(e, 'item', item.id) : undefined}>
+      <g className="drawing-layer">{items.filter((i): i is DrawingItem => i.type === 'drawing').map(item => <g key={item.id} data-item-id={item.id} transform={`translate(${item.transform.x} ${item.transform.y})`} style={hidden.has(item.id) ? { visibility: 'hidden' } : undefined} onPointerDown={editable ? e => onObjectDown?.(e, 'item', item.id) : undefined}>
         <path d={strokePath(item)} fill="#333431" opacity=".88" /><rect width={item.transform.width} height={item.transform.height} fill="transparent" className="drawing-hit" />
       </g>)}</g>
       <g className="frame-layer">{frames.map(frame => <rect key={frame.id} className={`frame-outline ${selection?.kind === 'frame' && selection.id === frame.id ? 'selected' : ''}`} x={frame.bounds.x} y={frame.bounds.y} width={frame.bounds.width} height={frame.bounds.height} onPointerDown={editable ? e => onObjectDown?.(e, 'frame', frame.id) : undefined} />)}</g>
     </svg>
     <div className="world-dom">
-      {items.filter(i => i.type !== 'drawing').map(item => <div key={item.id} data-item-id={item.id} className={`canvas-item ${item.type} ${(selection?.kind === 'item' && selection.id === item.id) || multiSelection.includes(item.id) ? 'selected' : ''} ${editing === item.id ? 'editing' : ''}`} style={rectStyle(item.transform)} onPointerDown={editable ? e => { if (editing !== item.id) onObjectDown?.(e, 'item', item.id) } : undefined} onDoubleClick={editable ? () => onObjectDoubleClick?.('item', item.id) : undefined}>
-        <ItemBody item={item} editing={editing === item.id} assetUrls={assetUrls} onContentChange={value => onContentChange?.(item.id, value)} onDoneEditing={() => onDoneEditing?.()} />
+      {items.filter(i => i.type !== 'drawing').map(item => <div key={item.id} data-item-id={item.id} className={`canvas-item ${item.type} ${(selection?.kind === 'item' && selection.id === item.id) || multiSelection.includes(item.id) ? 'selected' : ''} ${editing === item.id ? 'editing' : ''}`} style={{ ...rectStyle(item.transform), visibility: hidden.has(item.id) ? 'hidden' : undefined }} onPointerDown={editable ? e => { if (editing !== item.id) onObjectDown?.(e, 'item', item.id) } : undefined} onDoubleClick={editable ? () => onObjectDoubleClick?.('item', item.id) : undefined}>
+        <ItemBody item={item} editing={editing === item.id} assetUrls={assetUrls} onContentChange={value => onContentChange?.(item.id, value)} onCodeLanguageChange={value => onCodeLanguageChange?.(item.id, value)} onDoneEditing={() => onDoneEditing?.()} />
       </div>)}
       {frames.map(frame => <div key={frame.id} className={`frame-title ${selection?.kind === 'frame' && selection.id === frame.id ? 'selected' : ''}`} style={{ left: frame.bounds.x, top: frame.bounds.y - 37 }} onPointerDown={editable ? e => { if (editing !== frame.id) onObjectDown?.(e, 'frame', frame.id) } : undefined} onDoubleClick={editable ? () => onObjectDoubleClick?.('frame', frame.id) : undefined}>
         {editing === frame.id ? <input autoFocus value={frame.title || ''} onChange={e => onContentChange?.(frame.id, e.target.value)} onBlur={onDoneEditing} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') onDoneEditing?.(); e.stopPropagation() }} /> : <span>{frame.title || 'Untitled region'}</span>}
