@@ -222,7 +222,8 @@ export function Presentation({ board, story, onClose }: { board: Board; story: S
   }, [exploring])
 
   const startDrag = (event: React.PointerEvent) => {
-    if (!exploring || event.button !== 0) return
+    if (!exploring || (event.button !== 0 && event.button !== 1)) return
+    if (event.button === 1) event.preventDefault()
     drag.current = { x: event.clientX, y: event.clientY, camera: exploreViewport }
     event.currentTarget.setPointerCapture(event.pointerId)
   }
@@ -234,7 +235,7 @@ export function Presentation({ board, story, onClose }: { board: Board; story: S
   return <div className="presentation-shell">
     <div className="reveal" ref={root}><div className="slides">{story.steps.map(step => <StorySlide key={step.id} board={board} step={step} size={size} printMode={printMode} />)}</div></div>
     <div className="presentation-flight" ref={flightRoot} style={{ display: 'none' }}><StaticBoard board={board} viewport={initialCamera} mode="readonly" /></div>
-    {exploring && <div className="presentation-explore" onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={() => { drag.current = null }}><BoardRenderer board={board} viewport={exploreViewport} mode="readonly" /></div>}
+    {exploring && <div className="presentation-explore" onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={() => { drag.current = null }} onPointerCancel={() => { drag.current = null }} onAuxClick={event => { if (event.button === 1) event.preventDefault() }}><BoardRenderer board={board} viewport={exploreViewport} mode="readonly" /></div>}
     <div className="presentation-top"><span>{story.title}</span><span className="presentation-count">{String(index + 1).padStart(2, '0')} / {String(story.steps.length).padStart(2, '0')}{!!story.steps[index].revealItems?.length && ` · ${revealed[story.steps[index].id] || 0}/${story.steps[index].revealItems?.length}`}</span><button onClick={onClose} title="Close presentation"><X size={18} /></button></div>
     <div className="presentation-bottom"><button title="Previous" disabled={(index === 0 && !(revealed[story.steps[0].id] || 0)) || exploring} onClick={() => deck.current?.prev()}><ArrowLeft size={18} /></button><button title="Next" disabled={(index >= story.steps.length-1 && (revealed[story.steps[index].id] || 0) >= (story.steps[index].revealItems?.length || 0)) || exploring} onClick={() => deck.current?.next()}><ArrowRight size={18} /></button><span className="presentation-divider" /><button title={exploring ? 'Resume story' : 'Explore board · Esc'} onClick={exploring ? resume : enterExplore}><Move size={17} /> {exploring ? 'Resume' : 'Explore'}</button><button title="Speaker view · S" onClick={() => (deck.current?.getPlugin('notes') as { open?: () => void } | undefined)?.open?.()}>Notes</button><button title="Print or save as PDF" onClick={() => { const url = new URL(window.location.href); url.searchParams.set('board', board.id); url.searchParams.set('story', story.id); url.searchParams.set('print-pdf', ''); window.open(url.href, '_blank', 'noopener') }}><Printer size={16} /></button><button title="Fullscreen" onClick={() => void document.documentElement.requestFullscreen?.()}><Maximize2 size={16} /></button></div>
     {exploring && <div className="explore-caption">Explore board · Esc to resume this step</div>}

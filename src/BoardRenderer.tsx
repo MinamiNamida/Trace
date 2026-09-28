@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import katex from 'katex'
 import getStroke from 'perfect-freehand'
 import { CodeBlock } from './CodeBlock'
+import { MarkdownText } from './MarkdownText'
 import { unionBounds } from './model'
 import type { Board, CanvasItem, DrawingItem, Frame, Id, Selection, Transform, Viewport } from './model'
 import { loadAsset } from './storage'
@@ -30,8 +31,7 @@ function FormulaContent({ latex, editing, onChange, onDone }: { latex: string; e
   let html = ''
   try { html = katex.renderToString(latex || '\\square', { throwOnError: false, displayMode: true, trust: false }) } catch { html = latex }
   if (editing) return <div className="formula-editor">
-    <textarea autoFocus spellCheck={false} placeholder="LaTeX, e.g. \\int_0^1 x^2\\,dx" value={latex} onChange={event => onChange(event.target.value)} onBlur={onDone} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); onDone() } event.stopPropagation() }} />
-    <div className="formula-preview" aria-label="Live formula preview" dangerouslySetInnerHTML={{ __html: html }} />
+    <textarea autoFocus spellCheck={false} aria-label="LaTeX formula" placeholder="LaTeX" value={latex} onChange={event => onChange(event.target.value)} onBlur={onDone} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); onDone() } event.stopPropagation() }} />
   </div>
   return <div className="formula-content" dangerouslySetInnerHTML={{ __html: html }} />
 }
@@ -51,17 +51,16 @@ type Props = {
   onResizeDown?: (event: React.PointerEvent, kind: 'item' | 'frame', id: Id) => void
   onEdgeHandleDown?: (event: React.PointerEvent, id: Id) => void
   onContentChange?: (id: Id, value: string) => void
+  onTextHeightChange?: (id: Id, height: number) => void
   onCodeLanguageChange?: (id: Id, language: string) => void
   onDoneEditing?: () => void
 }
 
-function ItemBody({ item, editing, onContentChange, onCodeLanguageChange, onDoneEditing, assetUrls }: { item: CanvasItem; editing: boolean; onContentChange: (value: string) => void; onCodeLanguageChange: (value: string) => void; onDoneEditing: () => void; assetUrls?: Record<Id, string> }) {
+function ItemBody({ item, editing, onContentChange, onCodeLanguageChange, onDoneEditing, onTextHeightChange, assetUrls }: { item: CanvasItem; editing: boolean; onContentChange: (value: string) => void; onCodeLanguageChange: (value: string) => void; onDoneEditing: () => void; onTextHeightChange?: (height: number) => void; assetUrls?: Record<Id, string> }) {
   if (item.type === 'image') return <ImageContent assetId={item.assetId} alt={item.alt} assetUrl={assetUrls?.[item.assetId]} />
   if (item.type === 'formula') return <FormulaContent latex={item.latex} editing={editing} onChange={onContentChange} onDone={onDoneEditing} />
   if (item.type === 'code') return <CodeBlock item={item} editing={editing} onCodeChange={onContentChange} onLanguageChange={onCodeLanguageChange} onDone={onDoneEditing} />
-  if (item.type === 'text') return editing ? (
-    <textarea autoFocus spellCheck={false} value={item.text} onChange={e => onContentChange(e.target.value)} onBlur={onDoneEditing} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); onDoneEditing() } e.stopPropagation() }} style={{ fontSize: item.fontSize, fontWeight: item.bold ? 600 : 400 }} />
-  ) : <div className="text-content" style={{ fontSize: item.fontSize, fontWeight: item.bold ? 600 : 400 }}>{item.text}</div>
+  if (item.type === 'text') return <MarkdownText item={item} editing={editing} onChange={onContentChange} onDone={onDoneEditing} onHeightChange={onTextHeightChange} />
   return null
 }
 
@@ -79,7 +78,7 @@ function edgePoints(a: Frame, b: Frame) {
 
 const rectStyle = (t: Transform): React.CSSProperties => ({ left: t.x, top: t.y, width: t.width, height: t.height, transform: t.rotation ? `rotate(${t.rotation}deg)` : undefined })
 
-export function BoardRenderer({ board, viewport, mode, visibleItems, hiddenItems, assetUrls, selection, multiSelection = [], editing, onObjectDown, onObjectDoubleClick, onResizeDown, onEdgeHandleDown, onContentChange, onCodeLanguageChange, onDoneEditing }: Props) {
+export function BoardRenderer({ board, viewport, mode, visibleItems, hiddenItems, assetUrls, selection, multiSelection = [], editing, onObjectDown, onObjectDoubleClick, onResizeDown, onEdgeHandleDown, onContentChange, onTextHeightChange, onCodeLanguageChange, onDoneEditing }: Props) {
   const editable = mode === 'edit'
   const detail = viewport.zoom < .33 ? 'far' : viewport.zoom < .72 ? 'mid' : 'near'
   const frames = Object.values(board.frames)
@@ -103,8 +102,8 @@ export function BoardRenderer({ board, viewport, mode, visibleItems, hiddenItems
       <g className="frame-layer">{frames.map(frame => <rect key={frame.id} className={`frame-outline ${selection?.kind === 'frame' && selection.id === frame.id ? 'selected' : ''}`} x={frame.bounds.x} y={frame.bounds.y} width={frame.bounds.width} height={frame.bounds.height} onPointerDown={editable ? e => onObjectDown?.(e, 'frame', frame.id) : undefined} />)}</g>
     </svg>
     <div className="world-dom">
-      {items.filter(i => i.type !== 'drawing').map(item => <div key={item.id} data-item-id={item.id} className={`canvas-item ${item.type} ${(selection?.kind === 'item' && selection.id === item.id) || multiSelection.includes(item.id) ? 'selected' : ''} ${editing === item.id ? 'editing' : ''}`} style={{ ...rectStyle(item.transform), visibility: hidden.has(item.id) ? 'hidden' : undefined }} onPointerDown={editable ? e => { if (editing !== item.id) onObjectDown?.(e, 'item', item.id) } : undefined} onDoubleClick={editable ? () => onObjectDoubleClick?.('item', item.id) : undefined}>
-        <ItemBody item={item} editing={editing === item.id} assetUrls={assetUrls} onContentChange={value => onContentChange?.(item.id, value)} onCodeLanguageChange={value => onCodeLanguageChange?.(item.id, value)} onDoneEditing={() => onDoneEditing?.()} />
+      {items.filter(i => i.type !== 'drawing').map(item => <div key={item.id} data-item-id={item.id} className={`canvas-item ${item.type} ${(selection?.kind === 'item' && selection.id === item.id) || multiSelection.includes(item.id) ? 'selected' : ''} ${editing === item.id ? 'editing' : ''}`} style={{ ...rectStyle(item.transform), visibility: hidden.has(item.id) ? 'hidden' : undefined }} onPointerDown={editable ? e => { if (editing === item.id) e.stopPropagation(); else onObjectDown?.(e, 'item', item.id) } : undefined} onDoubleClick={editable ? () => onObjectDoubleClick?.('item', item.id) : undefined}>
+        <ItemBody item={item} editing={editing === item.id} assetUrls={assetUrls} onContentChange={value => onContentChange?.(item.id, value)} onTextHeightChange={onTextHeightChange ? height => onTextHeightChange(item.id, height) : undefined} onCodeLanguageChange={value => onCodeLanguageChange?.(item.id, value)} onDoneEditing={() => onDoneEditing?.()} />
       </div>)}
       {frames.map(frame => <div key={frame.id} className={`frame-title ${selection?.kind === 'frame' && selection.id === frame.id ? 'selected' : ''}`} style={{ left: frame.bounds.x, top: frame.bounds.y - 37 }} onPointerDown={editable ? e => { if (editing !== frame.id) onObjectDown?.(e, 'frame', frame.id) } : undefined} onDoubleClick={editable ? () => onObjectDoubleClick?.('frame', frame.id) : undefined}>
         {editing === frame.id ? <input autoFocus value={frame.title || ''} onChange={e => onContentChange?.(frame.id, e.target.value)} onBlur={onDoneEditing} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') onDoneEditing?.(); e.stopPropagation() }} /> : <span>{frame.title || 'Untitled region'}</span>}

@@ -2,14 +2,18 @@
 
 Trace is a local-first spatial board for learning notes, code, formulas, images, sketches, named regions, and stories. It uses React, TypeScript, DOM/SVG, KaTeX, highlight.js, perfect-freehand, Zustand, IndexedDB, and Reveal.js.
 
+Try it online: [Trace on GitHub Pages](https://minaminamida.github.io/Trace/).
+
 Run with `pnpm install` and `pnpm dev`. Open the local URL shown by Vite. A Fourier Transform study board is created on first launch; subsequent edits save in IndexedDB. Image files live in a separate IndexedDB asset store rather than the Board JSON.
 
 Use the board title menu to create a blank board or switch between boards saved in this browser.
 
 ## Working on the board
 
-- Drag empty board space to select several items. Drag with Space or the Hand tool to pan. Trackpad scroll pans; pinch, mouse wheel, and the zoom controls zoom around the cursor.
-- Double-click text, code blocks, formulas, or frame titles to edit. New text, code blocks, and formulas begin editing immediately. Click elsewhere or press Cmd/Ctrl Enter to finish. Empty new items are discarded.
+- Drag empty board space to select several items. Hold the middle mouse button anywhere on the board, or drag with Space or the Hand tool, to pan. On a touch screen, drag empty space with one finger to pan and pinch with two fingers to zoom. Trackpad scroll pans; mouse wheel and the zoom controls also zoom.
+- Drag an item or frame near another item's edge or center to align it. The same snapping works when moving several items or resizing an item or frame. Hold Alt while dragging to bypass snapping.
+- Double-click or double-tap text, code blocks, formulas, or frame titles to edit. New text, code blocks, and formulas begin editing immediately. Click or tap elsewhere, or press Cmd/Ctrl Enter to finish. Empty new items are discarded.
+- Text uses Vditor's instant rendering mode. The block under the cursor shows Markdown syntax such as `$1$` and `**bold**`, then renders again when the cursor leaves. Type `$...$` for inline math or `$$...$$` for display math. Existing plain-text notes keep their original display until edited.
 - Choose **Code block** or press **C**, then click the board. Select a language in the editor to highlight the code on the board and in presentations.
 - Formula editing takes LaTeX source directly and shows a live KaTeX preview.
 - Use Frame to drag a named region. A frame stores bounds only, so moving or deleting it leaves all canvas items in place.
