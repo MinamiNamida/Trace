@@ -1,10 +1,11 @@
-import { ArrowLeft, ArrowRight, Copy, Download, Ellipsis, FileText, Play, Plus, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Copy, Download, Ellipsis, FileText, Play, Printer, Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { InlineRename } from './InlineRename'
 import { screenToWorld, uid } from './model'
 import type { Board, CanvasItem, Frame, Id, StoryStep, Transform, Viewport } from './model'
 import { boardState } from './store'
+import { openPrintWindow } from './printWindow'
 
 function frameOrder(board: Board): Frame[] {
   const frames = Object.values(board.frames)
@@ -48,6 +49,7 @@ export function StoryPanel({ board, viewport, activeStoryId, onStoryChange, onPr
   const [inspector, setInspector] = useState<'reveal' | 'notes' | null>(null)
   const [storyMenu, setStoryMenu] = useState(false)
   const [renamingStoryId, setRenamingStoryId] = useState<Id | null>(null)
+  const exportingRef = useRef(false)
   const [exporting, setExporting] = useState(false)
   const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 })
   const addButton = useRef<HTMLButtonElement>(null)
@@ -157,16 +159,27 @@ export function StoryPanel({ board, viewport, activeStoryId, onStoryChange, onPr
       if (index >= 0 && next >= 0 && next < list.length) [list[index], list[next]] = [list[next], list[index]]
     })
   }
-  const exportStory = async () => {
-    if (!story || exporting) return
+  const exportStory = async (format: 'html' | 'pdf') => {
+    if (!story || exportingRef.current) return
+    exportingRef.current = true
+    const snapshot = boardState().board
+    const snapshotStory = snapshot.stories[story.id] || story
     setExporting(true)
-    try { const module = await import('./exportStory'); await module.exportStoryHtml(board, story) }
-    catch (error) { window.alert(`Could not export HTML: ${error instanceof Error ? error.message : String(error)}`) }
-    finally { setExporting(false) }
+    let target: Window | undefined
+    try {
+      if (format === 'pdf') target = openPrintWindow()
+      const module = await import('./exportStory')
+      if (target) await module.exportStoryPdf(snapshot, snapshotStory, target)
+      else await module.exportStoryHtml(snapshot, snapshotStory)
+    } catch (error) {
+      target?.close()
+      window.alert(`Could not export ${format.toUpperCase()}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    finally { exportingRef.current = false; setExporting(false) }
   }
 
   return <div className="story-panel">
-    <div className="story-panel-head"><span className="story-label">STORY</span>{story ? <>{renamingStoryId === story.id ? <InlineRename key={story.id} value={story.title} label="Story title" className="story-title-input" onCommit={title => boardState().change(board => { if (board.stories[story.id]) board.stories[story.id].title = title })} onClose={() => setRenamingStoryId(null)} /> : <select aria-label="Current story" value={story.id} onChange={event => { onStoryChange(event.target.value); setActiveStepId(null); setInspector(null) }}>{stories.map(entry => <option key={entry.id} value={entry.id}>{entry.title}</option>)}</select>}<button className="story-icon" title="Rename story" onClick={rename}>✎</button><div className="story-menu-anchor"><button className="story-icon" title="Story actions" onClick={() => setStoryMenu(value => !value)}><Ellipsis size={16} /></button>{storyMenu && <div className="story-menu"><button onClick={duplicateStory}><Copy size={14} /> Duplicate story</button><button onClick={deleteStory}><Trash2 size={14} /> Delete story</button></div>}</div></> : <span className="story-empty-title">Choose a sequence of frames</span>}<button className="story-icon" title="New story" onClick={createStory}><Plus size={16} /></button><span className="story-panel-spacer" />{story && <button className="story-export" disabled={!story.steps.length || exporting} onClick={() => void exportStory()}><Download size={14} /> {exporting ? 'Exporting…' : 'HTML'}</button>}{story && <button className="story-present" disabled={!story.steps.length} onClick={() => onPresent(story.id)}><Play size={15} fill="currentColor" /> Present</button>}<button className="story-icon" title="Close story editor" onClick={onClose}><X size={18} /></button></div>
+    <div className="story-panel-head"><span className="story-label">STORY</span>{story ? <>{renamingStoryId === story.id ? <InlineRename key={story.id} value={story.title} label="Story title" className="story-title-input" onCommit={title => boardState().change(board => { if (board.stories[story.id]) board.stories[story.id].title = title })} onClose={() => setRenamingStoryId(null)} /> : <select aria-label="Current story" value={story.id} onChange={event => { onStoryChange(event.target.value); setActiveStepId(null); setInspector(null) }}>{stories.map(entry => <option key={entry.id} value={entry.id}>{entry.title}</option>)}</select>}<button className="story-icon" title="Rename story" onClick={rename}>✎</button><div className="story-menu-anchor"><button className="story-icon" title="Story actions" onClick={() => setStoryMenu(value => !value)}><Ellipsis size={16} /></button>{storyMenu && <div className="story-menu"><button onClick={duplicateStory}><Copy size={14} /> Duplicate story</button><button onClick={deleteStory}><Trash2 size={14} /> Delete story</button></div>}</div></> : <span className="story-empty-title">Choose a sequence of frames</span>}<button className="story-icon" title="New story" onClick={createStory}><Plus size={16} /></button><span className="story-panel-spacer" />{story && <button className="story-export" disabled={!story.steps.length || exporting} onClick={() => void exportStory('html')}><Download size={14} /> {exporting ? 'Exporting…' : 'HTML'}</button>}{story && <button className="story-export" disabled={!story.steps.length || exporting} onClick={() => void exportStory('pdf')}><Printer size={14} /> PDF</button>}{story && <button className="story-present" disabled={!story.steps.length} onClick={() => onPresent(story.id)}><Play size={15} fill="currentColor" /> Present</button>}<button className="story-icon" title="Close story editor" onClick={onClose}><X size={18} /></button></div>
     {!story ? <div className="story-start"><p>A story references frames on this board. It can revisit a frame without copying its contents.</p><div><button onClick={createStory}>New empty story</button>{order.length > 0 && <button onClick={createFromFrames}>Use current frame order</button>}</div></div> : <>
       <div className="story-steps">{story.steps.map((step, index) => <div key={step.id} className="story-step-wrap"><button className={`story-step ${activeStep?.id === step.id ? 'active' : ''}`} onClick={() => { setActiveStepId(step.id); onFocusFrame(step.frameId, step.viewport) }}><small>{String(index + 1).padStart(2, '0')}</small><span>{board.frames[step.frameId]?.title || 'Missing frame'}</span>{step.viewport && <i title="Custom camera">◈</i>}</button><span className="story-arrow">→</span></div>)}<div className="story-add-wrap"><button ref={addButton} className="story-add" onClick={() => { const rect = addButton.current?.getBoundingClientRect(); if (rect) setMenuPosition({ left: rect.left, top: Math.max(10, rect.top - Math.min(240, order.length * 32 + 16) - 8) }); setAdding(value => !value) }}><Plus size={15} /> Add frame</button></div></div>
       {adding && createPortal(<div className="story-add-menu" style={{ position: 'fixed', left: menuPosition.left, top: menuPosition.top, bottom: 'auto', zIndex: 50 }}>{order.length ? order.map(frame => <button key={frame.id} onClick={() => addStep(frame.id)}>{frame.title || 'Untitled region'}</button>) : <span>Draw a frame first</span>}</div>, document.body)}

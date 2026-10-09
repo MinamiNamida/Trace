@@ -29,6 +29,8 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Run regression tests
+        run: pnpm test
       - name: Build site
         run: pnpm build
       - name: Configure GitHub Pages

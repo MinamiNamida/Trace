@@ -1,22 +1,27 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, ChevronDown, CircleHelp, Code2, Eraser, Focus, Frame, Hand, ImagePlus, Maximize2, MousePointer2, PenLine, Redo2, Sigma, Trash2, Type, Undo2, Waypoints } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ChevronDown, CircleHelp, ClipboardPaste, Copy, Scissors, Group, Ungroup, Code2, Eraser, Focus, Frame, Hand, ImagePlus, Maximize2, MousePointer2, PenLine, Redo2, Sigma, Trash2, Type, Undo2, Waypoints } from 'lucide-react'
 import { BoardRenderer } from './BoardRenderer'
+import { ContextMenu } from './ContextMenu'
+import type { MenuAction } from './ContextMenu'
+import { boundsFor, canGroup, createClip, expandGroups, frameChildren, groupObjects, insertClip, reconcileFrame, reconcileFrames, removeObjects, rootIds, selectedGroups, selectedIds, selectionBounds, ungroupObjects, withFrameChildren, wrapInFrame } from './boardOperations'
+import type { BoardClip } from './boardOperations'
+import { parseClip, recalledClip, rememberClip, restoreClipAssets, writeClip } from './boardClipboard'
 import { snapMove, snapResize } from './alignment'
 import type { AlignmentGuide } from './alignment'
-import { createDemoBoard } from './demo'
+import { createGuideBoard, isOriginalDemoBoard, GUIDE_START_FRAME } from './demo'
 import { StoryPanel } from './StoryPanel'
 import { InlineRename } from './InlineRename'
 import { boardState, useBoard } from './store'
 import { clampZoom, fitBounds, screenToWorld, uid, unionBounds, zoomAt } from './model'
 import type { Board, CanvasItem, Id, Selection, Tool, Transform, Viewport } from './model'
-import { listBoards, loadBoard, saveAsset, saveBoard } from './storage'
+import { deleteBoard, listBoards, loadBoard, saveAsset, saveBoard } from './storage'
 
 type Gesture =
   | { kind: 'pan'; x: number; y: number; viewport: Viewport; pointerId: number; moved: boolean }
   | { kind: 'marquee'; x: number; y: number; currentX: number; currentY: number }
   | { kind: 'createEdit'; id: Id }
-  | { kind: 'moveMulti'; x: number; y: number; originals: Record<Id, Transform>; started: boolean }
-  | { kind: 'move' | 'resize'; target: Exclude<Selection, null>; x: number; y: number; original: Transform; originalPoints?: { x: number; y: number; pressure?: number }[]; started: boolean }
+  | { kind: 'moveMulti'; x: number; y: number; originals: Record<Id, Transform>; started: boolean; primary: { kind: 'item' | 'frame'; id: Id } }
+  | { kind: 'resize'; target: Exclude<Selection, null>; x: number; y: number; original: Transform; originalPoints?: { x: number; y: number; pressure?: number }[]; started: boolean }
   | { kind: 'draw'; id: Id; points: { x: number; y: number; pressure: number }[] }
   | { kind: 'frame'; id: Id; x: number; y: number }
   | { kind: 'connect'; from: Id }
@@ -64,11 +69,17 @@ export default function App() {
   const [marquee, setMarquee] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
   const [snapGuides, setSnapGuides] = useState<AlignmentGuide[]>([])
   const [panning, setPanning] = useState(false)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; world: { x: number; y: number } } | null>(null)
+  const [notice, setNotice] = useState('')
+  const clipboardBusy = useRef(false)
   const [ready, setReady] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
   const [connector, setConnector] = useState<{ from: Id; x: number; y: number } | null>(null)
   const [imagePosition, setImagePosition] = useState<{ x: number; y: number } | null>(null)
   const [saveState, setSaveState] = useState('Saved locally')
+  const saveTimer = useRef(0)
+  const boardOperation = useRef(false)
+  const [boardBusy, setBoardBusy] = useState(false)
   const [boardMenu, setBoardMenu] = useState(false)
   const [renamingBoard, setRenamingBoard] = useState(false)
   const [boardList, setBoardList] = useState<{ id: string; title: string }[]>([])
@@ -82,26 +93,35 @@ export default function App() {
       const query = new URLSearchParams(window.location.search)
       const activeId = query.get('board') || localStorage.getItem('spatial-learning-board.active') || 'main'
       const stored = await loadBoard(activeId)
-      const initial = stored || await loadBoard('main') || await createDemoBoard()
+      const entries = await listBoards()
+      const existing = stored || await loadBoard(entries[0]?.id || 'main')
+      const replaceDemo = existing ? await isOriginalDemoBoard(existing) : false
+      const initial = !existing || replaceDemo ? await createGuideBoard(existing?.id) : existing
+      if (!active) return
+      if (!stored || replaceDemo) await saveBoard(initial)
       if (!active) return
       boardState().setBoard(initial)
+      if (!initial.frameMembership) await saveBoard(boardState().board)
+      if (!active) return
       localStorage.setItem('spatial-learning-board.active', initial.id)
       setBoardList([...(await listBoards()).filter(entry => entry.id !== initial.id), { id: initial.id, title: initial.title }])
       const bounds = unionBounds([...Object.values(initial.items).map(i => i.transform), ...Object.values(initial.frames).map(f => ({ ...f.bounds, y: f.bounds.y - 48, height: f.bounds.height + 48 }))])
-      if (bounds) boardState().setViewport(fitBounds(bounds, window.innerWidth, window.innerHeight, 76))
+      if (!existing || replaceDemo) boardState().setViewport(fitBounds(initial.frames[GUIDE_START_FRAME].bounds, window.innerWidth, window.innerHeight, 110))
+      else if (bounds) boardState().setViewport(fitBounds(bounds, window.innerWidth, window.innerHeight, 76))
       const requestedStory = query.get('story')
       if (requestedStory && initial.stories[requestedStory]?.steps.length) setPresentingStoryId(requestedStory)
       setReady(true)
-    })()
+    })().catch(error => { if (active) setSaveState(`Could not open board: ${error instanceof Error ? error.message : String(error)}`) })
     return () => { active = false }
   }, [])
 
   useEffect(() => {
-    if (!ready) return
+    if (!ready || boardBusy) return
+    let active = true
     setSaveState('Saving…')
-    const timer = window.setTimeout(() => saveBoard(board).then(() => setSaveState('Saved locally')).catch(() => setSaveState('Save failed')), 450)
-    return () => clearTimeout(timer)
-  }, [board, ready])
+    saveTimer.current = window.setTimeout(() => saveBoard(board).then(() => { if (active) setSaveState('Saved locally') }).catch(() => { if (active) setSaveState('Save failed') }), 450)
+    return () => { active = false; clearTimeout(saveTimer.current) }
+  }, [board, ready, boardBusy])
 
   const screenPoint = (event: { clientX: number; clientY: number }) => {
     const rect = root.current!.getBoundingClientRect()
@@ -120,6 +140,8 @@ export default function App() {
   }
 
   const onSurfacePointerDownCapture = (event: React.PointerEvent) => {
+    if (event.button === 2) return
+    setContextMenu(null)
     if (event.pointerType === 'touch' && !(event.target as Element).closest('.canvas-item.editing, .frame-title:has(input)')) {
       touches.current.set(event.pointerId, screenPoint(event))
       if (touches.current.size === 2) {
@@ -150,6 +172,7 @@ export default function App() {
 
   const addImage = async (file: File, at?: { x: number; y: number }) => {
     if (!file.type.startsWith('image/')) return
+    const boardId = boardState().board.id
     const id = uid()
     await saveAsset(id, file)
     const url = URL.createObjectURL(file)
@@ -158,39 +181,134 @@ export default function App() {
     await image.decode().catch(() => {})
     const ratio = image.naturalWidth && image.naturalHeight ? image.naturalWidth / image.naturalHeight : 1.5
     URL.revokeObjectURL(url)
+    if (boardState().board.id !== boardId) return
     const width = Math.min(540, Math.max(220, image.naturalWidth || 420))
     const point = at || screenToWorld(window.innerWidth / 2, window.innerHeight / 2, boardState().viewport)
     const item: CanvasItem = { id, type: 'image', assetId: id, alt: file.name, transform: { x: point.x, y: point.y, width, height: width / ratio } }
-    boardState().change(board => { board.items[id] = item })
+    boardState().change(board => { board.items[id] = item; reconcileFrames(board, [id]) })
     boardState().setSelection({ kind: 'item', id })
     boardState().setTool('select')
   }
 
+  const chooseObjects = (ids: Id[], expand = true) => {
+    const state = boardState()
+    const next = expand ? expandGroups(state.board, ids) : ids.filter(id => !!boundsFor(state.board, id))
+    if (next.length === 1) state.setSelection({ kind: state.board.frames[next[0]] ? 'frame' : 'item', id: next[0] })
+    else state.setMultiSelection(next)
+  }
+  const currentIds = () => selectedIds(boardState().selection, boardState().multiSelection)
+  const removeSelection = () => {
+    const state = boardState()
+    const ids = currentIds()
+    if (state.selection?.kind === 'edge') ids.push(state.selection.id)
+    if (!ids.length) return
+    state.change(board => removeObjects(board, ids))
+    state.setSelection(null)
+  }
+  const groupSelection = () => {
+    const ids = currentIds()
+    if (!canGroup(boardState().board, ids)) return
+    boardState().change(board => groupObjects(board, ids))
+    chooseObjects(ids)
+  }
+  const ungroupSelection = () => {
+    const ids = currentIds()
+    if (!selectedGroups(boardState().board, ids).length) return
+    boardState().change(board => ungroupObjects(board, ids))
+    chooseObjects(ids)
+  }
+  const duplicateSelection = () => {
+    const state = boardState(), ids = currentIds()
+    if (!ids.length) return
+    const clip = createClip(state.board, ids)
+    let inserted: Id[] = []
+    state.change(board => { inserted = insertClip(board, clip) })
+    chooseObjects(inserted)
+  }
+  const copySelection = async (cut = false) => {
+    const state = boardState(), ids = currentIds()
+    if (!ids.length || clipboardBusy.current) return
+    const clip = createClip(state.board, ids)
+    rememberClip(clip)
+    if (cut) removeSelection()
+    clipboardBusy.current = true
+    try { await writeClip(clip); setNotice(cut ? '已剪切' : '已复制') }
+    catch { setNotice('已复制到画板剪贴板，可用右键菜单粘贴；系统剪贴板未获授权。') }
+    finally { clipboardBusy.current = false }
+  }
+  const pasteClip = async (clip: BoardClip, at?: { x: number; y: number }) => {
+    const boardId = boardState().board.id
+    const restored = await restoreClipAssets(clip)
+    if (boardState().board.id !== boardId) return
+    const point = at || screenToWorld(window.innerWidth / 2, window.innerHeight / 2, boardState().viewport)
+    let inserted: Id[] = []
+    boardState().change(board => { inserted = insertClip(board, restored, point) })
+    boardState().setTool('select'); chooseObjects(inserted)
+  }
+  const pasteText = (text: string, at?: { x: number; y: number }) => {
+    const id = uid(), point = at || screenToWorld(window.innerWidth / 2, window.innerHeight / 2, boardState().viewport)
+    boardState().change(board => {
+      board.items[id] = { id, type: 'text', text, markdown: true, fontSize: 20, transform: { ...point, width: 420, height: 100 } }
+      reconcileFrames(board, [id])
+    })
+    boardState().setTool('select'); chooseObjects([id])
+  }
+  const pasteFromMenu = async (at: { x: number; y: number }) => {
+    const boardId = boardState().board.id
+    try {
+      if (!navigator.clipboard.read) {
+        const text = await navigator.clipboard.readText()
+        if (boardState().board.id !== boardId) return
+        const clip = parseClip(text)
+        if (clip) await pasteClip(clip, at)
+        else if (text.trim()) pasteText(text, at)
+        return
+      }
+      const data = await navigator.clipboard.read()
+      if (boardState().board.id !== boardId) return
+      for (const entry of data) {
+        const text = entry.types.includes('text/plain') ? await (await entry.getType('text/plain')).text() : ''
+        if (boardState().board.id !== boardId) return
+        const clip = parseClip(text)
+        if (clip) { await pasteClip(clip, at); return }
+        const type = entry.types.find(type => type.startsWith('image/'))
+        if (type) {
+          const blob = await entry.getType(type)
+          if (boardState().board.id !== boardId) return
+          await addImage(new File([blob], 'Pasted image', { type }), at); return
+        }
+        if (text.trim()) { pasteText(text, at); return }
+      }
+      setNotice('剪贴板中没有可粘贴的画板内容、文字或图片。')
+    } catch {
+      if (boardState().board.id !== boardId) return
+      const clip = recalledClip()
+      if (clip) { await pasteClip(clip, at); return }
+      setNotice('浏览器未允许读取剪贴板，请用 ⌘ / Ctrl V 粘贴。')
+    }
+  }
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
-      if (boardState().editing) return
-      const file = [...(event.clipboardData?.files || [])].find(f => f.type.startsWith('image/'))
-      if (file) { event.preventDefault(); void addImage(file) }
+      const target = event.target as HTMLElement
+      if (boardState().editing || target.closest?.('input, textarea, [contenteditable="true"], .presentation-shell')) return
+      const text = event.clipboardData?.getData('text/plain') || ''
+      const clip = parseClip(text)
+      const file = [...(event.clipboardData?.files || [])].find(file => file.type.startsWith('image/'))
+      if (clip || file || text.trim()) {
+        event.preventDefault(); setContextMenu(null)
+        if (clip) void pasteClip(clip).catch(() => setNotice('粘贴失败，请重试。'))
+        else if (file) void addImage(file)
+        else pasteText(text)
+      }
     }
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
   }, [])
-
-  const removeSelection = () => {
-    const selected = boardState().selection
-    const multi = boardState().multiSelection
-    if (!selected && !multi.length) return
-    boardState().change(board => {
-      for (const id of multi) delete board.items[id]
-      if (selected?.kind === 'item') delete board.items[selected.id]
-      if (selected?.kind === 'frame') {
-        delete board.frames[selected.id]
-        for (const edge of Object.values(board.frameEdges)) if (edge.from === selected.id || edge.to === selected.id) delete board.frameEdges[edge.id]
-      }
-      if (selected?.kind === 'edge') delete board.frameEdges[selected.id]
-    })
-    boardState().setSelection(null)
-  }
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(''), 4000)
+    return () => clearTimeout(timer)
+  }, [notice])
 
   const finishEditing = () => {
     const state = boardState()
@@ -221,18 +339,17 @@ export default function App() {
       const state = boardState()
       const target = event.target as HTMLElement
       const inField = ['INPUT', 'TEXTAREA'].includes(target.tagName) || target.isContentEditable
-      if (event.code === 'Space' && !inField) { event.preventDefault(); space.current = true; return }
-      if (inField || state.editing) return
+      if (inField || state.editing || target.closest?.('.presentation-shell') || document.querySelector('.presentation-shell')) return
+      if (event.code === 'Space') { event.preventDefault(); space.current = true; return }
       const mod = event.metaKey || event.ctrlKey
       if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? state.redo() : state.undo(); return }
       if (mod && event.key.toLowerCase() === 'y') { event.preventDefault(); state.redo(); return }
-      if (mod && event.key.toLowerCase() === 'd') {
-        event.preventDefault()
-        if (state.selection?.kind === 'item') { const original = state.board.items[state.selection.id]; if (original) { const id = uid(); state.change(b => { b.items[id] = { ...structuredClone(original), id, transform: { ...original.transform, x: original.transform.x + 26, y: original.transform.y + 26 } } }); state.setSelection({ kind: 'item', id }) } }
-        return
-      }
+      if (mod && event.key.toLowerCase() === 'a') { event.preventDefault(); chooseObjects([...Object.keys(state.board.items), ...Object.keys(state.board.frames)]); return }
+      if (mod && event.key.toLowerCase() === 'g') { event.preventDefault(); event.shiftKey ? ungroupSelection() : groupSelection(); return }
+      if (mod && ['c', 'x'].includes(event.key.toLowerCase())) { event.preventDefault(); void copySelection(event.key.toLowerCase() === 'x'); return }
+      if (mod && event.key.toLowerCase() === 'd') { event.preventDefault(); duplicateSelection(); return }
       if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); removeSelection(); return }
-      if (event.key === 'Escape') { state.setSelection(null); state.setTool('select'); return }
+      if (event.key === 'Escape') { setContextMenu(null); state.setSelection(null); state.setTool('select'); return }
       if (!mod && !event.altKey) {
         const map: Record<string, Tool> = { v: 'select', h: 'hand', t: 'text', c: 'code', f: 'formula', i: 'image', p: 'pen', e: 'eraser', r: 'frame', l: 'edge' }
         const next = map[event.key.toLowerCase()]
@@ -283,26 +400,26 @@ export default function App() {
     gesturePointer.current = event.pointerId
     const state = boardState()
     if (space.current || state.tool === 'hand') { startPan(event); return }
-    if (state.tool === 'eraser' && kind === 'item' && state.board.items[id]?.type === 'drawing') { state.change(b => { delete b.items[id] }); return }
+    if (state.tool === 'eraser' && kind === 'item' && state.board.items[id]?.type === 'drawing') { state.change(b => removeObjects(b, [id])); return }
     if (state.tool === 'edge' && kind === 'frame') { gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }); return }
     if (state.editing === id || (state.tool !== 'select' && state.tool !== 'eraser')) return
-    if (kind === 'item' && state.multiSelection.includes(id)) {
-      const p = screenPoint(event)
-      gesture.current = { kind: 'moveMulti', x: p.x, y: p.y, originals: Object.fromEntries(state.multiSelection.map(itemId => [itemId, { ...state.board.items[itemId].transform }])), started: false }
+    if (kind === 'edge') { state.setSelection({ kind, id }); return }
+    const current = currentIds()
+    const unit = event.ctrlKey || event.metaKey ? [id] : expandGroups(state.board, [id])
+    if (event.shiftKey) {
+      const selected = unit.every(member => current.includes(member))
+      chooseObjects(selected ? current.filter(member => !unit.includes(member)) : [...new Set([...current, ...unit])], false)
       return
     }
-    const selected: Exclude<Selection, null> = { kind, id }
-    state.setSelection(selected)
-    if (kind === 'edge') return
-    const original = kind === 'item' ? state.board.items[id]?.transform : state.board.frames[id]?.bounds
-    if (!original) return
+    if (!current.includes(id) || event.ctrlKey || event.metaKey) chooseObjects(unit, false)
+    const ids = withFrameChildren(state.board, currentIds())
     const p = screenPoint(event)
-    gesture.current = { kind: 'move', target: selected, x: p.x, y: p.y, original: { ...original }, started: false }
+    gesture.current = { kind: 'moveMulti', primary: { kind, id }, x: p.x, y: p.y, originals: Object.fromEntries(ids.map(id => [id, { ...boundsFor(state.board, id)! }])), started: false }
   }
 
   const onResizeDown = (event: React.PointerEvent, kind: 'item' | 'frame', id: Id) => {
     event.stopPropagation()
-    if (pinch.current) return
+    if (event.button !== 0 || pinch.current) return
     gesturePointer.current = event.pointerId
     const state = boardState()
     const original = kind === 'item' ? state.board.items[id]?.transform : state.board.frames[id]?.bounds
@@ -350,21 +467,18 @@ export default function App() {
         const snapped = event.altKey ? { bounds: raw, guides: [] } : snapMove(raw, alignmentReferences(state.board, new Set(Object.keys(g.originals))), state.viewport.zoom)
         const moveX = snapped.bounds.x - originalBounds.x, moveY = snapped.bounds.y - originalBounds.y
         setSnapGuides(snapped.guides)
-        state.updateGesture(b => { for (const [id, original] of Object.entries(g.originals)) if (b.items[id]) b.items[id].transform = { ...original, x: original.x + moveX, y: original.y + moveY } })
-      } else if (g.kind === 'move' || g.kind === 'resize') {
+        state.updateGesture(b => { for (const [id, original] of Object.entries(g.originals)) { const next = { ...original, x: original.x + moveX, y: original.y + moveY }; if (b.items[id]) b.items[id].transform = next; else if (b.frames[id]) b.frames[id].bounds = next } })
+      } else if (g.kind === 'resize') {
         const dx = (p.x - g.x) / state.viewport.zoom, dy = (p.y - g.y) / state.viewport.zoom
         if (!g.started && Math.hypot(dx, dy) < 2) return
         if (!g.started) { state.beginGesture(); g.started = true }
         const original = g.original
         const item = g.target.kind === 'item' ? state.board.items[g.target.id] : undefined
         let next: Transform
-        if (g.kind === 'move') next = { ...original, x: original.x + dx, y: original.y + dy }
-        else if (item?.type === 'image') { const ratio = original.width / original.height; const width = Math.max(64, original.width + dx); next = { ...original, width, height: width / ratio } }
+        if (item?.type === 'image') { const ratio = original.width / original.height; const width = Math.max(64, original.width + dx); next = { ...original, width, height: width / ratio } }
         else next = { ...original, width: Math.max(60, original.width + dx), height: Math.max(35, original.height + dy) }
         const references = alignmentReferences(state.board, new Set([g.target.id]))
-        const snapped = event.altKey ? { bounds: next, guides: [] } : g.kind === 'move'
-          ? snapMove(next, references, state.viewport.zoom)
-          : snapResize(next, references, state.viewport.zoom, item?.type === 'image' ? 64 : 60, 35, item?.type === 'image' ? original.width / original.height : undefined)
+        const snapped = event.altKey ? { bounds: next, guides: [] } : snapResize(next, references, state.viewport.zoom, item?.type === 'image' ? 64 : 60, 35, item?.type === 'image' ? original.width / original.height : undefined)
         next = snapped.bounds
         setSnapGuides(snapped.guides)
         state.updateGesture(b => {
@@ -396,29 +510,31 @@ export default function App() {
       if (!g) return
       if (event.pointerId !== gesturePointer.current) return
       const state = boardState()
-      if (event.pointerType === 'touch' && g.kind === 'move' && !g.started && (g.target.kind === 'item' || g.target.kind === 'frame')) {
+      if (event.pointerType === 'touch' && g.kind === 'moveMulti' && !g.started) {
         const previous = lastTouchTap.current
         const now = Date.now()
-        if (previous?.id === g.target.id && now - previous.time < 400) {
-          const item = state.board.items[g.target.id]
-          if (g.target.kind === 'frame' || item?.type === 'text' || item?.type === 'code' || item?.type === 'formula') {
-            state.beginGesture(); state.setEditing(g.target.id)
+        if (previous?.id === g.primary.id && now - previous.time < 400) {
+          const item = state.board.items[g.primary.id]
+          if (g.primary.kind === 'frame' || item?.type === 'text' || item?.type === 'code' || item?.type === 'formula') {
+            state.beginGesture(); state.setEditing(g.primary.id)
           }
           lastTouchTap.current = null
-        } else lastTouchTap.current = { id: g.target.id, time: now }
+        } else lastTouchTap.current = { id: g.primary.id, time: now }
       }
-      if (g.kind === 'createEdit') state.setEditing(g.id)
+      if (g.kind === 'createEdit') { state.updateGesture(board => reconcileFrames(board, [g.id])); state.setEditing(g.id) }
+      if (g.kind === 'moveMulti' && g.started) state.updateGesture(board => reconcileFrames(board, Object.keys(g.originals).filter(id => !board.items[id]?.frameId || !g.originals[board.items[id].frameId!])) )
+      if (g.kind === 'resize' && g.started) state.updateGesture(board => { if (g.target.kind === 'frame') reconcileFrame(board, g.target.id); else reconcileFrames(board, [g.target.id]) })
+      if (g.kind === 'draw') state.updateGesture(board => reconcileFrames(board, [g.id]))
       if (g.kind === 'marquee') {
         const a = screenToWorld(Math.min(g.x, g.currentX), Math.min(g.y, g.currentY), state.viewport)
         const b = screenToWorld(Math.max(g.x, g.currentX), Math.max(g.y, g.currentY), state.viewport)
         if (Math.hypot(g.currentX-g.x, g.currentY-g.y) > 3) {
-          const ids = Object.values(state.board.items).filter(item => item.transform.x < b.x && item.transform.x + item.transform.width > a.x && item.transform.y < b.y && item.transform.y + item.transform.height > a.y).map(item => item.id)
-          if (ids.length === 1) state.setSelection({ kind: 'item', id: ids[0] })
-          else state.setMultiSelection(ids)
+          const ids = [...Object.keys(state.board.items), ...Object.keys(state.board.frames)].filter(id => { const bounds = boundsFor(state.board, id)!; return bounds.x >= a.x && bounds.x + bounds.width <= b.x && bounds.y >= a.y && bounds.y + bounds.height <= b.y })
+          chooseObjects(rootIds(state.board, ids))
         }
         setMarquee(null)
       }
-      if (g.kind === 'frame') { state.setEditing(g.id); state.setTool('select') }
+      if (g.kind === 'frame') { state.updateGesture(board => reconcileFrame(board, g.id)); state.setEditing(g.id); state.setTool('select') }
       if (g.kind === 'connect') {
         const p = worldPoint(event)
         const target = Object.values(state.board.frames).find(f => f.id !== g.from && p.x >= f.bounds.x && p.x <= f.bounds.x+f.bounds.width && p.y >= f.bounds.y-40 && p.y <= f.bounds.y+f.bounds.height)
@@ -446,7 +562,7 @@ export default function App() {
     if (!surface) return
     const wheel = (event: WheelEvent) => {
       const target = event.target as Element
-      if (target.closest('.presentation-shell')) return
+      if (target.closest?.('.presentation-shell')) return
       const overCanvas = surface.contains(target)
       if (!overCanvas && !(target.closest('.app') && (event.ctrlKey || event.metaKey))) return
       event.preventDefault()
@@ -503,7 +619,7 @@ export default function App() {
   const fitSelection = () => {
     if (selection?.kind === 'item') focus(board.items[selection.id]?.transform || null)
     if (selection?.kind === 'frame') focus(board.frames[selection.id]?.bounds || null)
-    if (multiSelection.length) focus(unionBounds(multiSelection.map(id => board.items[id]?.transform).filter((bounds): bounds is Transform => !!bounds)))
+    if (multiSelection.length) focus(selectionBounds(board, multiSelection))
   }
   const contentChange = (id: Id, value: string) => boardState().updateGesture(b => {
     const item = b.items[id]
@@ -527,34 +643,129 @@ export default function App() {
     setBoardMenu(false)
     setRenamingBoard(true)
   }
-  const openBoard = async (id: string) => {
-    if (id === boardState().board.id) { setBoardMenu(false); return }
-    const next = await loadBoard(id)
-    if (!next) return
-    await saveBoard(boardState().board)
+  const activateBoard = (next: Board) => {
     boardState().setBoard(next)
-    boardState().setSelection(null)
-    boardState().setEditing(null)
-    boardState().setViewport({ x: 100, y: 100, zoom: 1 })
-    localStorage.setItem('spatial-learning-board.active', id)
+    const bounds = unionBounds([...Object.values(next.items).map(item => item.transform), ...Object.values(next.frames).map(frame => ({ ...frame.bounds, y: frame.bounds.y - 48, height: frame.bounds.height + 48 }))])
+    boardState().setViewport(bounds ? fitBounds(bounds, window.innerWidth, window.innerHeight, 76) : { x: window.innerWidth / 2, y: window.innerHeight / 2, zoom: 1 })
+    localStorage.setItem('spatial-learning-board.active', next.id)
+    const url = new URL(window.location.href)
+    url.searchParams.set('board', next.id)
+    url.searchParams.delete('story')
+    url.searchParams.delete('print-pdf')
+    window.history.replaceState(null, '', url)
+    setContextMenu(null)
+    setActiveStoryId(null)
+    setPresentingStoryId(null)
+    setRenamingBoard(false)
     setBoardMenu(false)
+    gesture.current = null
+    newItemIds.current.clear()
+    setConnector(null)
+    setMarquee(null)
+    setSnapGuides([])
   }
-  const newBoard = async () => {
+  const manageBoards = async (action: () => Promise<void>) => {
+    if (boardOperation.current) return
+    boardOperation.current = true
+    clearTimeout(saveTimer.current)
+    setBoardBusy(true)
+    finishEditing()
+    try {
+      await action()
+      setBoardList(await listBoards())
+    } catch (error) {
+      window.alert(`Could not update boards: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      boardOperation.current = false
+      setBoardBusy(false)
+    }
+  }
+  const openBoard = (id: string) => manageBoards(async () => {
+    if (id === boardState().board.id) { setBoardMenu(false); return }
     await saveBoard(boardState().board)
-    const fresh: Board = { id: uid(), version: 2, title: 'Untitled board', items: {}, frames: {}, frameEdges: {}, stories: {} }
-    boardState().setBoard(fresh)
-    boardState().setSelection(null)
-    boardState().setEditing(null)
-    boardState().setViewport({ x: window.innerWidth / 2, y: window.innerHeight / 2, zoom: 1 })
-    localStorage.setItem('spatial-learning-board.active', fresh.id)
-    setBoardList(list => [...list.filter(entry => entry.id !== fresh.id), { id: fresh.id, title: fresh.title }])
-    setBoardMenu(false)
+    let next = await loadBoard(id)
+    if (!next) throw new Error('This board no longer exists.')
+    const replaceDemo = await isOriginalDemoBoard(next)
+    if (replaceDemo) { next = await createGuideBoard(next.id); await saveBoard(next) }
+    activateBoard(next)
+    if (replaceDemo) boardState().setViewport(fitBounds(next.frames[GUIDE_START_FRAME].bounds, window.innerWidth, window.innerHeight, 110))
+  })
+  const blankBoard = (): Board => ({ id: uid(), version: 2, title: 'Untitled board', items: {}, frames: {}, frameEdges: {}, stories: {}, frameMembership: true })
+  const newBoard = () => manageBoards(async () => {
+    await saveBoard(boardState().board)
+    const fresh = blankBoard()
+    await saveBoard(fresh)
+    activateBoard(fresh)
+  })
+  const removeBoard = (id: string, title: string) => {
+    if (boardOperation.current || !window.confirm(`Delete “${title}”? This permanently deletes this board and its stories.`)) return
+    return manageBoards(async () => {
+      const current = boardState().board
+      if (current.id === id) {
+        const remaining = (await listBoards()).find(entry => entry.id !== id)
+        const next = (remaining && await loadBoard(remaining.id)) || blankBoard()
+        await saveBoard(next)
+        await deleteBoard(id)
+        activateBoard(next)
+      } else {
+        await saveBoard(current)
+        await deleteBoard(id)
+      }
+    })
   }
 
-  if (!ready) return <div className="loading">Opening board…</div>
+  const openContextMenu = (event: React.MouseEvent) => {
+    const target = event.target as Element
+    if (target.closest('input, textarea, [contenteditable="true"], .canvas-item.editing')) return
+    event.preventDefault(); event.stopPropagation()
+    finishEditing()
+    gesture.current = null; gesturePointer.current = null; setMarquee(null); setSnapGuides([]); setConnector(null)
+    const object = target.closest<HTMLElement>('[data-item-id], [data-frame-id], [data-edge-id]')
+    const id = object?.dataset.itemId || object?.dataset.frameId || object?.dataset.edgeId
+    if (id) {
+      if (object?.dataset.edgeId) boardState().setSelection({ kind: 'edge', id })
+      else if (!currentIds().includes(id)) chooseObjects([id])
+    } else boardState().setSelection(null)
+    setContextMenu({ x: event.clientX, y: event.clientY, world: worldPoint(event) })
+  }
+  const ids = selectedIds(selection, multiSelection)
+  const frameId = selection?.kind === 'frame' ? selection.id : null
+  const command = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'
+  const menuActions: MenuAction[] = [
+    { label: '撤销', icon: Undo2, shortcut: `${command}Z`, disabled: !past.length, run: () => boardState().undo() },
+    { label: '重做', icon: Redo2, shortcut: `${command}⇧Z`, disabled: !future.length, run: () => boardState().redo() },
+    'separator',
+    { label: '剪切', icon: Scissors, shortcut: `${command}X`, disabled: !ids.length, run: () => void copySelection(true) },
+    { label: '复制', icon: Copy, shortcut: `${command}C`, disabled: !ids.length, run: () => void copySelection() },
+    { label: '粘贴', icon: ClipboardPaste, shortcut: `${command}V`, run: () => { if (contextMenu) void pasteFromMenu(contextMenu.world).catch(() => setNotice('粘贴失败，请重试。')) } },
+  ]
+  if (ids.length) menuActions.push(
+    { label: '创建副本', icon: Copy, shortcut: `${command}D`, run: duplicateSelection },
+    'separator',
+    { label: '编组', icon: Group, shortcut: `${command}G`, disabled: !canGroup(board, ids), run: groupSelection },
+    { label: '取消编组', icon: Ungroup, shortcut: `${command}⇧G`, disabled: !selectedGroups(board, ids).length, run: ungroupSelection },
+  )
+  if (ids.length && !ids.some(id => !!board.frames[id])) menuActions.push({ label: '将所选内容放入 Frame', icon: Frame, run: () => {
+    let id: Id | null = null
+    boardState().change(board => { id = wrapInFrame(board, currentIds()) })
+    if (id) chooseObjects([id])
+  } })
+  if (frameId) menuActions.push(
+    { label: '选择 Frame 内所有内容', icon: MousePointer2, disabled: !frameChildren(board, frameId).length, run: () => chooseObjects(frameChildren(boardState().board, frameId)) },
+    { label: '解除 Frame 内容绑定', icon: Ungroup, disabled: !frameChildren(board, frameId).length, run: () => boardState().change(board => { for (const id of frameChildren(board, frameId)) delete board.items[id].frameId }) },
+    { label: '移除 Frame，保留内容', icon: Frame, run: () => { boardState().change(board => removeObjects(board, [frameId], false)); boardState().setSelection(null) } },
+  )
+  if (selection && selection.kind !== 'edge' && (selection.kind === 'frame' || ['text', 'code', 'formula'].includes(board.items[selection.id]?.type))) menuActions.push({ label: selection.kind === 'frame' ? '重命名 Frame' : '编辑内容', icon: Type, run: () => objectDoubleClick(selection.kind as 'item' | 'frame', selection.id) })
+  menuActions.push('separator',
+    { label: '全选', icon: MousePointer2, shortcut: `${command}A`, disabled: !Object.keys(board.items).length && !Object.keys(board.frames).length, run: () => chooseObjects([...Object.keys(boardState().board.items), ...Object.keys(boardState().board.frames)]) },
+    { label: ids.length ? '聚焦所选内容' : '查看整张画板', icon: Focus, run: ids.length ? fitSelection : fitBoard },
+  )
+  if (selection || ids.length) menuActions.push('separator', { label: frameId ? '删除 Frame 及内容' : '删除所选内容', icon: Trash2, shortcut: '⌫', danger: true, run: removeSelection })
+
+  if (!ready) return <div className="loading">{saveState.startsWith('Could not') ? saveState : 'Opening board…'}</div>
   return <div className={`app tool-${tool} ${panning ? 'is-panning' : ''}`}>
-    <div className="canvas-surface" ref={root} onPointerDownCapture={onSurfacePointerDownCapture} onPointerDown={onBackgroundDown} onAuxClick={e => { if (e.button === 1) e.preventDefault() }} onDrop={onDrop} onDragOver={e => e.preventDefault()}>
-      <BoardRenderer board={board} viewport={viewport} mode="edit" selection={selection} multiSelection={multiSelection} editing={editing} onObjectDown={onObjectDown} onObjectDoubleClick={objectDoubleClick} onResizeDown={onResizeDown} onEdgeHandleDown={(event, id) => { gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }) }} onContentChange={contentChange} onTextHeightChange={(id, height) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'text' && height > item.transform.height) item.transform.height = height })} onCodeLanguageChange={(id, language) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'code') item.language = language })} onDoneEditing={finishEditing} />
+    <div className="canvas-surface" ref={root} onPointerDownCapture={onSurfacePointerDownCapture} onPointerDown={onBackgroundDown} onContextMenu={openContextMenu} onAuxClick={e => { if (e.button === 1) e.preventDefault() }} onDrop={onDrop} onDragOver={e => e.preventDefault()}>
+      <BoardRenderer board={board} viewport={viewport} mode="edit" selection={selection} multiSelection={multiSelection} editing={editing} onObjectDown={onObjectDown} onObjectDoubleClick={objectDoubleClick} onResizeDown={onResizeDown} onEdgeHandleDown={(event, id) => { if (event.button !== 0) return; gesturePointer.current = event.pointerId; gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }) }} onContentChange={contentChange} onTextHeightChange={(id, height) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'text' && height > item.transform.height) item.transform.height = height })} onCodeLanguageChange={(id, language) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'code') item.language = language })} onDoneEditing={finishEditing} />
       {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
       {!!snapGuides.length && <svg className="alignment-guides" aria-hidden="true">{snapGuides.map(line => line.axis === 'x'
         ? <line key="x" x1={line.position * viewport.zoom + viewport.x} x2={line.position * viewport.zoom + viewport.x} y1={line.start * viewport.zoom + viewport.y} y2={line.end * viewport.zoom + viewport.y} />
@@ -563,19 +774,21 @@ export default function App() {
       {connector && <svg className="connector-preview"><line x1={(board.frames[connector.from]?.bounds.x || 0) * viewport.zoom + viewport.x} y1={((board.frames[connector.from]?.bounds.y || 0)-20) * viewport.zoom + viewport.y} x2={connector.x * viewport.zoom + viewport.x} y2={connector.y * viewport.zoom + viewport.y} /></svg>}
     </div>
 
-    <header className="topbar"><div className="board-identity"><span className="brand-mark">◌</span><div className="board-menu-anchor">{renamingBoard ? <InlineRename value={board.title} label="Board title" className="board-name-input" onCommit={title => { boardState().change(b => { b.title = title }); setBoardList(list => list.map(entry => entry.id === board.id ? { ...entry, title } : entry)) }} onClose={() => setRenamingBoard(false)} /> : <button onClick={() => setBoardMenu(value => !value)} className="board-name">{board.title}<ChevronDown size={13} /></button>}{boardMenu && <div className="board-menu"><div className="menu-caption">BOARDS</div>{boardList.map(entry => <button key={entry.id} className={entry.id === board.id ? 'current' : ''} onClick={() => void openBoard(entry.id)}>{entry.title}</button>)}<div className="menu-rule" /><button onClick={() => void newBoard()}>+ New blank board</button><button onClick={renameBoard}>Rename current board</button></div>}</div><span className="save-state">{saveState}</span></div><div className="top-actions"><button className={`story-toggle ${showStory ? 'active' : ''}`} onClick={() => setShowStory(value => !value)}>Story</button><button title="How to use" onClick={() => setShowHelp(true)}><CircleHelp size={17} /></button></div></header>
+    <header className="topbar"><div className="board-identity"><span className="brand-mark">◌</span><div className="board-menu-anchor">{renamingBoard ? <InlineRename value={board.title} label="Board title" className="board-name-input" onCommit={title => { boardState().change(b => { b.title = title }); setBoardList(list => list.map(entry => entry.id === board.id ? { ...entry, title } : entry)) }} onClose={() => setRenamingBoard(false)} /> : <button onClick={() => setBoardMenu(value => !value)} className="board-name">{board.title}<ChevronDown size={13} /></button>}{boardMenu && <div className="board-menu"><div className="menu-caption">BOARDS</div>{boardList.map(entry => <div key={entry.id} className="board-menu-row"><button disabled={boardBusy} className={entry.id === board.id ? 'current' : ''} onClick={() => void openBoard(entry.id)}>{entry.title}</button><button disabled={boardBusy} className="board-delete" title={`Delete board: ${entry.title}`} aria-label={`Delete board: ${entry.title}`} onClick={() => void removeBoard(entry.id, entry.title)}><Trash2 size={14} /></button></div>)}<div className="menu-rule" /><button disabled={boardBusy} onClick={() => void newBoard()}>+ New blank board</button><button disabled={boardBusy} onClick={renameBoard}>Rename current board</button></div>}</div><span className="save-state">{saveState}</span></div><div className="top-actions"><button className={`story-toggle ${showStory ? 'active' : ''}`} onClick={() => setShowStory(value => !value)}>Story</button><button title="How to use" onClick={() => setShowHelp(true)}><CircleHelp size={17} /></button></div></header>
+    {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} actions={menuActions} onClose={() => setContextMenu(null)} />}
+    {notice && <div className="canvas-notice" role="status">{notice}</div>}
     <div className="toolbar" role="toolbar" aria-label="Board tools">{tools.map((entry, index) => <div key={entry.id} className={index === 2 || index === 8 ? 'tool-divider' : ''}><button title={`${entry.label} · ${entry.shortcut}`} aria-label={entry.label} className={tool === entry.id ? 'active' : ''} onClick={() => { boardState().setTool(entry.id); if (entry.id === 'image') fileInput.current?.click() }}><entry.icon size={19} strokeWidth={1.75} /></button></div>)}</div>
     {!showStory && <div className="context-controls">
       {selection?.kind === 'item' && board.items[selection.id]?.type === 'text' && <><button title="Toggle bold" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'text') item.bold = !item.bold })}>B</button><button title="Smaller text" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'text') item.fontSize = Math.max(12, item.fontSize-2) })}>A−</button><button title="Larger text" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'text') item.fontSize = Math.min(48, item.fontSize+2) })}>A+</button></>}
       {selection?.kind === 'item' && board.items[selection.id]?.type === 'drawing' && <><button title="Thinner stroke" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'drawing') item.lineWidth = Math.max(1, item.lineWidth-1) })}>−</button><button title="Thicker stroke" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'drawing') item.lineWidth = Math.min(12, item.lineWidth+1) })}>+</button></>}
-      {(selection || multiSelection.length > 0) && <><button title="Fit selection" onClick={fitSelection}><Focus size={16} /></button><button title="Delete selected" onClick={removeSelection}><Trash2 size={16} /></button></>}
+      {(selection || multiSelection.length > 0) && <><button title="Fit selection" onClick={fitSelection}><Focus size={16} /></button>{canGroup(board, ids) && <button title="编组 · Cmd/Ctrl G" onClick={groupSelection}><Group size={16} /></button>}{selectedGroups(board, ids).length > 0 && <button title="取消编组 · Cmd/Ctrl Shift G" onClick={ungroupSelection}><Ungroup size={16} /></button>}<button title="Delete selected" onClick={removeSelection}><Trash2 size={16} /></button></>}
     </div>}
     <div className="view-controls"><button title="View back" disabled={!viewPast.length} onClick={() => boardState().viewBack()}><ArrowLeft size={17} /></button><button title="View forward" disabled={!viewFuture.length} onClick={() => boardState().viewForward()}><ArrowRight size={17} /></button><span className="control-separator" /><button title="Fit board" onClick={fitBoard}><Maximize2 size={17} /></button><button title="Zoom out" onClick={() => { const s = boardState(); s.pushView(); s.setViewport(zoomAt(s.viewport, window.innerWidth/2, window.innerHeight/2, clampZoom(s.viewport.zoom*.8))) }}>−</button><span className="zoom-label">{Math.round(viewport.zoom*100)}%</span><button title="Zoom in" onClick={() => { const s = boardState(); s.pushView(); s.setViewport(zoomAt(s.viewport, window.innerWidth/2, window.innerHeight/2, clampZoom(s.viewport.zoom/.8))) }}>+</button></div>
     <div className="history-controls"><button title="Undo · Cmd/Ctrl Z" disabled={!past.length} onClick={() => boardState().undo()}><Undo2 size={17} /></button><button title="Redo · Cmd/Ctrl Shift Z" disabled={!future.length} onClick={() => boardState().redo()}><Redo2 size={17} /></button></div>
     <div className="board-hint">{tool === 'frame' ? 'Drag to mark a region' : tool === 'edge' ? 'Drag from a frame title to another frame' : tool === 'pen' ? 'Draw directly on the board' : tool === 'eraser' ? 'Click a stroke to erase' : tool === 'code' ? 'Click to place a code block' : tool === 'text' ? 'Click to place a Markdown note · type $...$ for inline math' : 'Drag empty space to select · Touch and drag to pan · Pinch to zoom'}</div>
     <input ref={fileInput} className="file-input" type="file" accept="image/*" onChange={e => { const file = e.target.files?.[0]; if (file) void addImage(file, imagePosition || undefined); e.target.value = ''; setImagePosition(null) }} />
-    {showStory && <StoryPanel board={board} viewport={viewport} activeStoryId={activeStoryId} onStoryChange={setActiveStoryId} onPresent={setPresentingStoryId} onClose={() => setShowStory(false)} onFocusFrame={(id, bounds) => focus(bounds || board.frames[id]?.bounds || null)} />}
+    {showStory && <StoryPanel key={board.id} board={board} viewport={viewport} activeStoryId={activeStoryId} onStoryChange={setActiveStoryId} onPresent={setPresentingStoryId} onClose={() => setShowStory(false)} onFocusFrame={(id, bounds) => focus(bounds || board.frames[id]?.bounds || null)} />}
     {presentingStoryId && board.stories[presentingStoryId]?.steps.length ? <Suspense fallback={<div className="loading presentation-loading">Opening story…</div>}><Presentation board={board} story={board.stories[presentingStoryId]} onClose={() => { setPresentingStoryId(null); if (document.fullscreenElement) void document.exitFullscreen() }} /></Suspense> : null}
-    {showHelp && <div className="modal-backdrop" onPointerDown={e => e.stopPropagation()}><div className="help-modal"><button className="modal-close" onClick={() => setShowHelp(false)}>×</button><span className="eyebrow">TRACE</span><h2>Think on the board.</h2><p>Place notes, code, images, formulas, and sketches anywhere. Draw a frame when a local idea has a name. Frames mark space; moving one never moves its content.</p><div className="help-grid"><span>Select several</span><span>Drag an empty part of the board</span><span>Move around</span><span>Middle button or Space + drag; one finger on empty space; trackpad scroll</span><span>Align objects</span><span>Drag near another edge or center; hold Alt to skip snapping</span><span>Zoom</span><span>Two finger pinch, mouse wheel, or zoom controls</span><span>Edit content</span><span>Double-click or double-tap; tap elsewhere to finish</span><span>Inline formula</span><span>Type $...$ in a Markdown note to render inline math</span><span>Code block</span><span>Press C, click the board, then choose a language</span><span>Formula source</span><span>Type LaTeX inside the selected formula box</span><span>Connect frames</span><span>Drag ↗ beside a frame title</span><span>Present</span><span>Open Story, build a path, then Present</span><span>Undo / Redo</span><span>⌘/Ctrl Z · ⌘/Ctrl Shift Z</span></div><button className="done-button" onClick={() => setShowHelp(false)}>Return to board</button></div></div>}
+    {showHelp && <div className="modal-backdrop" onPointerDown={e => e.stopPropagation()}><div className="help-modal"><button className="modal-close" onClick={() => setShowHelp(false)}>×</button><span className="eyebrow">TRACE</span><h2>Think on the board.</h2><p>Place notes, code, images, formulas, and sketches anywhere. Draw a frame when a local idea has a name. Frames keep their contents together; moving a frame moves its content. Group blocks to select and move them as one.</p><div className="help-grid"><span>Select several</span><span>Drag an empty part of the board, or Shift + click</span><span>Group / Ungroup</span><span>⌘/Ctrl G · ⌘/Ctrl Shift G (one nesting level at a time)</span><span>Copy / Cut / Paste</span><span>⌘/Ctrl C · X · V, or right-click the canvas</span><span>Select in a group</span><span>⌘/Ctrl + click selects one member; double-click to edit</span><span>Move around</span><span>Middle button or Space + drag; one finger on empty space; trackpad scroll</span><span>Align objects</span><span>Drag near another edge or center; hold Alt to skip snapping</span><span>Zoom</span><span>Two finger pinch, mouse wheel, or zoom controls</span><span>Edit content</span><span>Double-click or double-tap; tap elsewhere to finish</span><span>Inline formula</span><span>Type $...$ in a Markdown note to render inline math</span><span>Code block</span><span>Press C, click the board, then choose a language</span><span>Formula source</span><span>Type LaTeX inside the selected formula box</span><span>Connect frames</span><span>Drag ↗ beside a frame title</span><span>Present</span><span>Open Story, build a path, then Present</span><span>Undo / Redo</span><span>⌘/Ctrl Z · ⌘/Ctrl Shift Z</span></div><button className="done-button" onClick={() => setShowHelp(false)}>Return to board</button></div></div>}
   </div>
 }

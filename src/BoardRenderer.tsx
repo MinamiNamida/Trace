@@ -3,7 +3,7 @@ import katex from 'katex'
 import getStroke from 'perfect-freehand'
 import { CodeBlock } from './CodeBlock'
 import { MarkdownText } from './MarkdownText'
-import { unionBounds } from './model'
+import { selectionBounds } from './boardOperations'
 import type { Board, CanvasItem, DrawingItem, Frame, Id, Selection, Transform, Viewport } from './model'
 import { loadAsset } from './storage'
 
@@ -94,18 +94,18 @@ export function BoardRenderer({ board, viewport, mode, visibleItems, hiddenItems
         const d = p.vertical
           ? `M ${p.x1} ${p.y1} C ${p.x1} ${(p.y1 + p.y2) / 2}, ${p.x2} ${(p.y1 + p.y2) / 2}, ${p.x2} ${p.y2}`
           : `M ${p.x1} ${p.y1} C ${(p.x1 + p.x2) / 2} ${p.y1}, ${(p.x1 + p.x2) / 2} ${p.y2}, ${p.x2} ${p.y2}`
-        return <g key={edge.id} className={`frame-edge ${selection?.id === edge.id ? 'selected' : ''}`}><path d={d} markerEnd="url(#edge-arrow)" /><path className="edge-hit" d={d} onPointerDown={editable ? e => onObjectDown?.(e, 'edge', edge.id) : undefined} /></g>
+        return <g key={edge.id} data-edge-id={edge.id} className={`frame-edge ${selection?.id === edge.id ? 'selected' : ''}`}><path d={d} markerEnd="url(#edge-arrow)" /><path className="edge-hit" d={d} onPointerDown={editable ? e => onObjectDown?.(e, 'edge', edge.id) : undefined} /></g>
       })}</g>
       <g className="drawing-layer">{items.filter((i): i is DrawingItem => i.type === 'drawing').map(item => <g key={item.id} data-item-id={item.id} transform={`translate(${item.transform.x} ${item.transform.y})`} style={hidden.has(item.id) ? { visibility: 'hidden' } : undefined} onPointerDown={editable ? e => onObjectDown?.(e, 'item', item.id) : undefined}>
         <path d={strokePath(item)} fill="#333431" opacity=".88" /><rect width={item.transform.width} height={item.transform.height} fill="transparent" className="drawing-hit" />
       </g>)}</g>
-      <g className="frame-layer">{frames.map(frame => <rect key={frame.id} className={`frame-outline ${selection?.kind === 'frame' && selection.id === frame.id ? 'selected' : ''}`} x={frame.bounds.x} y={frame.bounds.y} width={frame.bounds.width} height={frame.bounds.height} onPointerDown={editable ? e => onObjectDown?.(e, 'frame', frame.id) : undefined} />)}</g>
+      <g className="frame-layer">{frames.map(frame => <rect key={frame.id} data-frame-id={frame.id} className={`frame-outline ${(selection?.kind === 'frame' && selection.id === frame.id) || multiSelection.includes(frame.id) ? 'selected' : ''}`} x={frame.bounds.x} y={frame.bounds.y} width={frame.bounds.width} height={frame.bounds.height} onPointerDown={editable ? e => onObjectDown?.(e, 'frame', frame.id) : undefined} />)}</g>
     </svg>
     <div className="world-dom">
       {items.filter(i => i.type !== 'drawing').map(item => <div key={item.id} data-item-id={item.id} className={`canvas-item ${item.type} ${(selection?.kind === 'item' && selection.id === item.id) || multiSelection.includes(item.id) ? 'selected' : ''} ${editing === item.id ? 'editing' : ''}`} style={{ ...rectStyle(item.transform), visibility: hidden.has(item.id) ? 'hidden' : undefined }} onPointerDown={editable ? e => { if (editing === item.id) e.stopPropagation(); else onObjectDown?.(e, 'item', item.id) } : undefined} onDoubleClick={editable ? () => onObjectDoubleClick?.('item', item.id) : undefined}>
         <ItemBody item={item} editing={editing === item.id} assetUrls={assetUrls} onContentChange={value => onContentChange?.(item.id, value)} onTextHeightChange={onTextHeightChange ? height => onTextHeightChange(item.id, height) : undefined} onCodeLanguageChange={value => onCodeLanguageChange?.(item.id, value)} onDoneEditing={() => onDoneEditing?.()} />
       </div>)}
-      {frames.map(frame => <div key={frame.id} className={`frame-title ${selection?.kind === 'frame' && selection.id === frame.id ? 'selected' : ''}`} style={{ left: frame.bounds.x, top: frame.bounds.y - 37 }} onPointerDown={editable ? e => { if (editing !== frame.id) onObjectDown?.(e, 'frame', frame.id) } : undefined} onDoubleClick={editable ? () => onObjectDoubleClick?.('frame', frame.id) : undefined}>
+      {frames.map(frame => <div key={frame.id} data-frame-id={frame.id} className={`frame-title ${(selection?.kind === 'frame' && selection.id === frame.id) || multiSelection.includes(frame.id) ? 'selected' : ''}`} style={{ left: frame.bounds.x, top: frame.bounds.y - 37 }} onPointerDown={editable ? e => { if (editing !== frame.id) onObjectDown?.(e, 'frame', frame.id) } : undefined} onDoubleClick={editable ? () => onObjectDoubleClick?.('frame', frame.id) : undefined}>
         {editing === frame.id ? <input autoFocus value={frame.title || ''} onChange={e => onContentChange?.(frame.id, e.target.value)} onBlur={onDoneEditing} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') onDoneEditing?.(); e.stopPropagation() }} /> : <span>{frame.title || 'Untitled region'}</span>}
         {editable && <button className="frame-connector" title="Drag to connect frames" onPointerDown={e => { e.stopPropagation(); onEdgeHandleDown?.(e, frame.id) }}>↗</button>}
       </div>)}
@@ -115,7 +115,7 @@ export function BoardRenderer({ board, viewport, mode, visibleItems, hiddenItems
         return <div className="selection-box" style={rectStyle(t)}><button className="resize-handle" title="Resize" onPointerDown={e => onResizeDown?.(e, selection.kind as 'item' | 'frame', selection.id)} /></div>
       })()}
       {editable && multiSelection.length > 1 && (() => {
-        const bounds = unionBounds(multiSelection.map(id => board.items[id]?.transform).filter((t): t is Transform => !!t))
+        const bounds = selectionBounds(board, multiSelection)
         return bounds ? <div className="selection-box multi-selection-box" style={rectStyle(bounds)} /> : null
       })()}
     </div>
