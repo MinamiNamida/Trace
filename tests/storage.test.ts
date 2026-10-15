@@ -34,3 +34,10 @@ test('a save already in flight completes before deletion, without resurrecting t
   await Promise.all([saveBoard(board), deleteBoard(board.id)])
   expect(await loadBoard(board.id)).toBeUndefined()
 })
+
+test('pen strokes round-trip through storage unchanged, and undo removes the stroke', async () => {
+  const board = blank('pen')
+  board.items = { s: { id: 's', type: 'drawing', lineWidth: 1.25, pen: { mode: 'technical', smoothing: .2, pressure: false, curve: 1 }, transform: { x: 1.5, y: 2.5, width: 3, height: 3 }, points: [{ x: 0, y: 0, pressure: .3, t: 0 }, { x: 3.125, y: 3.0625, t: 7 }] } }
+  await saveBoard(board)
+  expect(await loadBoard('pen')).toEqual(board)
+})
