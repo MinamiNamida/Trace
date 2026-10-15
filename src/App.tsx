@@ -18,7 +18,7 @@ import { createAutosave } from './autosave'
 import { createBackup, downloadBackup, restoreBackup } from './backup'
 import { acceptSample, realPressure, samplesOf, MAX_PEN_WIDTH, MIN_PEN_WIDTH } from './ink'
 import type { PenSettings } from './ink'
-import { deleteBoard, listBoards, loadBoard, saveAsset, saveBoard } from './storage'
+import { STORAGE_BLOCKED_EVENT, storageBlocked, deleteBoard, listBoards, loadBoard, saveAsset, saveBoard } from './storage'
 
 type Gesture =
   | { kind: 'pan'; x: number; y: number; viewport: Viewport; pointerId: number; moved: boolean }
@@ -107,6 +107,13 @@ export default function App() {
   const [presentingStoryId, setPresentingStoryId] = useState<Id | null>(null)
 
   useEffect(() => {
+    const blocked = () => setSaveState('Could not open board: another Trace tab is still open on an older version. Close or reload it, then this page continues by itself.')
+    if (storageBlocked()) blocked()
+    window.addEventListener(STORAGE_BLOCKED_EVENT, blocked)
+    return () => window.removeEventListener(STORAGE_BLOCKED_EVENT, blocked)
+  }, [])
+
+  useEffect(() => {
     let active = true
     ;(async () => {
       const query = new URLSearchParams(window.location.search)
@@ -129,6 +136,7 @@ export default function App() {
       else if (bounds) boardState().setViewport(fitBounds(bounds, window.innerWidth, window.innerHeight, 76))
       const requestedStory = query.get('story')
       if (requestedStory && initial.stories[requestedStory]?.steps.length) setPresentingStoryId(requestedStory)
+      setSaveState('Saved locally')
       setReady(true)
       // Ask the browser not to evict this origin's storage under pressure; the board lives only here.
       void navigator.storage?.persist?.().catch(() => {})

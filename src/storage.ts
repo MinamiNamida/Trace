@@ -1,10 +1,18 @@
 import { openDB } from 'idb'
 import type { Board, DrawingItem } from './model'
 
+export const STORAGE_BLOCKED_EVENT = 'trace:storage-blocked'
+let blockedByOlderTab = false
+/** True while another tab's older connection is holding up the upgrade (it can fire before the UI mounts). */
+export const storageBlocked = () => blockedByOlderTab
 const db = openDB('spatial-learning-board', 2, {
   upgrade(database) {
     for (const name of ['boards', 'assets', 'strokes'] as const) if (!database.objectStoreNames.contains(name)) database.createObjectStore(name)
   },
+  // Another tab still holds an older version open, so the upgrade cannot start until it is closed or reloaded.
+  blocked() { blockedByOlderTab = true; window.dispatchEvent(new Event(STORAGE_BLOCKED_EVENT)) },
+  blocking() { void db.then(database => database.close()); window.location.reload() },
+  // A newer version of the app in another tab needs to upgrade: step aside instead of blocking it.
 })
 
 /**

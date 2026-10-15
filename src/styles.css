@@ -68,3 +68,5 @@ html,body{overscroll-behavior:none}
 .markdown-wysiwyg .milkdown .ProseMirror p{margin:0 0 .42em;padding:0;line-height:1.55}
 .markdown-wysiwyg .milkdown .ProseMirror :last-child{margin-bottom:0}
 .markdown-wysiwyg .milkdown{touch-action:auto;user-select:text;cursor:text}
+
+.markdown-wysiwyg .milkdown .ProseMirror{cursor:text}

@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { CrepeBuilder } from '@milkdown/crepe/builder'
 import { codeMirror } from '@milkdown/crepe/feature/code-mirror'
-import { cursor } from '@milkdown/crepe/feature/cursor'
 import { latex } from '@milkdown/crepe/feature/latex'
 import { listItem } from '@milkdown/crepe/feature/list-item'
 import { table } from '@milkdown/crepe/feature/table'
@@ -28,7 +27,7 @@ export default function MilkdownEditor({ initial, focusPoint, onChange, onDone, 
     let disposed = false
     let created = false
     const crepe = new CrepeBuilder({ root: host.current!, defaultValue: initial })
-      .addFeature(listItem).addFeature(codeMirror).addFeature(table).addFeature(cursor)
+      .addFeature(listItem).addFeature(codeMirror).addFeature(table)
       .addFeature(latex, { katexOptions: { throwOnError: false, trust: false } })
     crepe.on(listener => listener.markdownUpdated((_, markdown) => { if (!disposed) latest.current.onChange(markdown) }))
     void crepe.create().then(() => {
