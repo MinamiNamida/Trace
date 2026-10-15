@@ -1,0 +1,12 @@
+{
+  "name": "Trace",
+  "short_name": "Trace",
+  "description": "A spatial notebook for thinking on an infinite board.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f7f7f4",
+  "theme_color": "#f7f7f4",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

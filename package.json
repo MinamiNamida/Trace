@@ -5,14 +5,15 @@
   "type": "module",
   "packageManager": "pnpm@10.17.1",
   "scripts": {
-    "predev": "node scripts/copy-vditor-assets.mjs",
     "dev": "vite --host 0.0.0.0",
-    "prebuild": "node scripts/copy-vditor-assets.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run"
   },
   "dependencies": {
+    "@milkdown/crepe": "^7.22.3",
+    "@milkdown/kit": "^7.22.3",
+    "@milkdown/react": "^7.22.3",
     "highlight.js": "^11.12.0",
     "idb": "^8.0.3",
     "immer": "^11.1.21",
@@ -26,7 +27,6 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "reveal.js": "^6.0.2",
-    "vditor": "^4.0.0",
     "zustand": "^5.0.8"
   },
   "devDependencies": {

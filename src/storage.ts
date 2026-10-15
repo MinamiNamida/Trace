@@ -40,15 +40,15 @@ export async function loadBoard(id = 'main'): Promise<Board | undefined> {
   const stored = await database.get('boards', id) as (Board & { format?: number }) | undefined
   if (!stored) return undefined
   const { format = 2, ...rest } = stored
-  const board: Board = rest.version < 2 ? { ...rest, version: 2, stories: rest.stories || {} } : rest
+  const raw: Board = rest.version < 2 ? { ...rest, version: 2, stories: rest.stories || {} } : rest
   if (format >= FORMAT) {
     const [keys, values] = await Promise.all([database.getAllKeys('strokes', strokeRange(id)), database.getAll('strokes', strokeRange(id))])
     const points = new Map(keys.map((key, index) => [(key as [string, string])[1], values[index]]))
-    for (const item of drawings(board)) item.points = points.get(item.id) ?? []
+    for (const item of drawings(raw)) item.points = points.get(item.id) ?? []
   }
   // A format 2 board has no stroke records yet, so its next save must write every stroke.
-  persisted.set(id, format >= FORMAT ? new Map(drawings(board).map(item => [item.id, item])) : new Map())
-  return board
+  persisted.set(id, format >= FORMAT ? new Map(drawings(raw).map(item => [item.id, item])) : new Map())
+  return raw
 }
 export async function listBoards(): Promise<{ id: string; title: string }[]> { return (await (await db).getAll('boards') as Board[]).map(board => ({ id: board.id, title: board.title })) }
 export function deleteBoard(id: string) { return serialized(() => removeBoard(id)) }

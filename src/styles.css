@@ -29,16 +29,6 @@
 .markdown-prose .katex-display{margin:.4em 0;overflow-x:auto;overflow-y:hidden}
 .markdown-text-editor{position:relative;z-index:12;width:100%;min-height:1.55em;padding:0;background:#f7f7f4;user-select:text;cursor:text;letter-spacing:normal;touch-action:auto}
 .markdown-text-editor>textarea{width:100%;height:100%;min-height:88px;padding:0;resize:none;overflow:auto;white-space:pre-wrap;color:#27342b;font:inherit;line-height:1.55;letter-spacing:normal}
-.canvas-item.text .markdown-vditor,.canvas-item.text .vditor{width:100%;min-height:0;height:auto!important;background:transparent;color:inherit;font:inherit}
-.canvas-item.text .vditor{display:block;border:0;border-radius:0;box-shadow:none;overflow:visible}
-.canvas-item.text .vditor-toolbar,.canvas-item.text .vditor-counter,.canvas-item.text .vditor-resize{display:none!important}
-.canvas-item.text .vditor-content,.canvas-item.text .vditor-ir{display:block;min-height:0;height:auto!important;overflow:visible}
-.canvas-item.text .vditor-ir>.vditor-reset{width:100%;height:auto!important;min-height:1.55em;margin:0;padding:0!important;overflow:visible;background:transparent;color:inherit;font:inherit;line-height:1.55;letter-spacing:normal;white-space:normal;outline:none}
-.canvas-item.text .vditor-ir>.vditor-reset p{min-height:1.55em;margin:0 0 .42em;line-height:1.55}
-.canvas-item.text .vditor-ir>.vditor-reset h1,.canvas-item.text .vditor-ir>.vditor-reset h2,.canvas-item.text .vditor-ir>.vditor-reset h3{margin:0 0 .42em;font-family:inherit;font-weight:650}
-.canvas-item.text .vditor-ir>.vditor-reset h1{font-size:1.55em;line-height:1.22}.canvas-item.text .vditor-ir>.vditor-reset h2{font-size:1.32em;line-height:1.28}.canvas-item.text .vditor-ir>.vditor-reset h3{font-size:1.14em;line-height:1.35}
-.canvas-item.text .vditor-ir>.vditor-reset ul,.canvas-item.text .vditor-ir>.vditor-reset ol{padding-left:1.4em;margin:.3em 0 .45em}
-.canvas-item.text .vditor-ir>.vditor-reset blockquote{margin:.4em 0;padding-left:.7em;border-left:2px solid #b2c4b7;box-sizing:border-box}
 @media (pointer: coarse){.resize-handle{right:-12px;bottom:-12px;width:24px;height:24px}.frame-connector{opacity:1;width:36px;height:36px}.toolbar button{min-width:44px;min-height:44px}.view-controls button,.history-controls button,.context-controls button{min-width:42px;min-height:42px}}
 .canvas-item.formula.editing{padding:0}
 .story-step-actions{overflow-x:auto}.story-step-actions>span{flex:none;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.story-step-actions button{display:flex;align-items:center;justify-content:center;flex:none;white-space:nowrap}.story-step-actions .story-delete{margin-left:auto}
@@ -60,3 +50,21 @@
 .app.tablet .pen-panel button,.app.tablet .history-controls button,.app.tablet .view-controls button{min-width:40px;height:40px}
 .app.tablet .pen-panel{bottom:100px}
 .app.tablet .canvas-surface{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+
+html,body{overscroll-behavior:none}
+
+/* Code fences inside Markdown notes (shared by the live preview, presentations and exports). */
+.markdown-prose .code-block{height:auto;margin:.45em 0;font-size:.82em;line-height:1.5;text-align:left}
+.markdown-prose .code-block pre{margin:0;padding:10px 14px;overflow:auto;background:transparent;border-radius:0}
+.markdown-prose .code-block code.hljs{display:block;padding:0;background:none;font-size:1em;white-space:pre}
+.markdown-prose .latex-block{margin:.4em 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+
+/* The WYSIWYG editor takes on the note's own typography so editing and display look the same. */
+.markdown-wysiwyg .milkdown{--crepe-color-background:transparent;--crepe-color-on-background:#252623;--crepe-color-surface:#f4f5f1;--crepe-color-surface-low:#eef0ea;--crepe-color-on-surface:#252623;--crepe-color-on-surface-variant:#5c665f;--crepe-color-outline:#aab4ac;--crepe-color-primary:#4a7364;--crepe-color-secondary:#e3eae5;--crepe-color-on-secondary:#2c4a3e;--crepe-color-inline-code:#4f5d54;--crepe-color-hover:#eef1ec;--crepe-color-selected:#e3eae5;--crepe-color-inline-area:#e6ebe3;--crepe-font-title:inherit;--crepe-font-default:inherit;--crepe-base-font-size:1em}
+.markdown-wysiwyg .milkdown .ProseMirror{padding:0!important;line-height:1.55;letter-spacing:normal;outline:none}
+.markdown-wysiwyg .milkdown .ProseMirror h1{font-size:1.55em;line-height:1.22;font-weight:650;margin:0 0 .42em;padding:0}
+.markdown-wysiwyg .milkdown .ProseMirror h2{font-size:1.32em;line-height:1.28;font-weight:630;margin:0 0 .42em;padding:0}
+.markdown-wysiwyg .milkdown .ProseMirror h3{font-size:1.14em;line-height:1.35;font-weight:610;margin:0 0 .42em;padding:0}
+.markdown-wysiwyg .milkdown .ProseMirror p{margin:0 0 .42em;padding:0;line-height:1.55}
+.markdown-wysiwyg .milkdown .ProseMirror :last-child{margin-bottom:0}
+.markdown-wysiwyg .milkdown{touch-action:auto;user-select:text;cursor:text}

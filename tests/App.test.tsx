@@ -5,7 +5,7 @@ import App from '../src/App'
 import { clearStorage, listBoards, loadBoard, saveBoard } from '../src/storage'
 import { boardState } from '../src/store'
 import { blank } from './fixtures'
-import type { Board } from '../src/model'
+import { migrateLegacyBoard, type Board } from '../src/model'
 import { reconcileFrames } from '../src/boardOperations'
 import originalDemo from './fourier-demo.json'
 
@@ -103,7 +103,7 @@ test('a new browser opens the editable guide without depending on a downloaded d
   expect(button('入门指南')).toBeUndefined()
   expect(Object.keys(guide.frames)).toHaveLength(4)
   expect(guide.stories['guide-tour'].steps).toHaveLength(4)
-  expect(new Set(Object.values(guide.items).map(item => item.type))).toEqual(new Set(['text', 'code', 'formula', 'image', 'drawing']))
+  expect(new Set(Object.values(guide.items).map(item => item.type))).toEqual(new Set(['text', 'image', 'drawing']))
   expect(boardState().viewport.zoom).toBeGreaterThan(.72)
   expect(await loadBoard(guide.id)).toEqual(guide)
   expect(fetch).not.toHaveBeenCalled()
@@ -139,8 +139,11 @@ test('editing the old example keeps its contents intact even when its title is u
   await settle()
   reconcileFrames(edited)
   edited.frameMembership = true
-  expect(boardState().board).toEqual(edited)
-  expect(await loadBoard('main')).toEqual(edited)
+  // Legacy code and formula blocks are carried over as Markdown notes; everything else is untouched.
+  const migrated = migrateLegacyBoard(edited)
+  expect(boardState().board).toEqual(migrated)
+  expect(Object.values(migrated.items).some(item => item.type === 'text' && /^```|^\$\$/.test(item.text))).toBe(true)
+  expect(await loadBoard('main')).toEqual(migrated)
 })
 
 const object = (id: string) => host.querySelector<HTMLElement>(`[data-item-id="${id}"], .frame-title[data-frame-id="${id}"]`)!
@@ -263,8 +266,8 @@ test('native text paste creates Markdown while clipboard shortcuts leave form in
   expect(Object.values(boardState().board.items)).toHaveLength(1)
 })
 
-function fire(target: Element | Window, type: string, init: { pointerId: number; pointerType: string; x: number; y: number }) {
-  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: init.x, clientY: init.y, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
+function fire(target: Element | Window, type: string, init: { pointerId: number; pointerType: string; x: number; y: number; button?: number; buttons?: number }) {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: init.x, clientY: init.y, button: init.button ?? 0, buttons: type === 'pointerup' ? 0 : init.buttons ?? 1 })
   Object.assign(event, { pointerId: init.pointerId, pointerType: init.pointerType, pressure: .5 })
   return act(async () => { target.dispatchEvent(event) })
 }
@@ -307,7 +310,7 @@ test('writing with the pen over existing ink starts a new stroke instead of grab
   expect(boardState().board.items.old.transform).toEqual(board.items.old.transform)
 })
 
-test('tablet mode ignores single fingers and touches that arrive while the pen is active, but still allows two-finger navigation', async () => {
+test('tablet mode: one finger pans, two fingers zoom, and touches near the pen are ignored', async () => {
   await mount()
   boardState().setTablet(true)
   const surface = host.querySelector('.canvas-surface')!
@@ -316,7 +319,7 @@ test('tablet mode ignores single fingers and touches that arrive while the pen i
   await fire(surface, 'pointerdown', { pointerId: 1, pointerType: 'touch', x: 200, y: 200 })
   await fire(window, 'pointermove', { pointerId: 1, pointerType: 'touch', x: 260, y: 240 })
   await fire(window, 'pointerup', { pointerId: 1, pointerType: 'touch', x: 260, y: 240 })
-  expect(boardState().viewport).toEqual(start)
+  expect(boardState().viewport).toMatchObject({ x: start.x + 60, y: start.y + 40, zoom: start.zoom })
 
   await fire(surface, 'pointerdown', { pointerId: 2, pointerType: 'pen', x: 300, y: 300 })
   await fire(window, 'pointerup', { pointerId: 2, pointerType: 'pen', x: 300, y: 300 })
@@ -352,4 +355,27 @@ test('dragging the eraser across strokes removes each one it crosses as a single
   expect(boardState().past.length).toBe(before + 1)
   await act(async () => boardState().undo())
   expect(Object.keys(boardState().board.items).sort()).toEqual(['a', 'b', 'c'])
+})
+
+test('pen eraser end and barrel button switch tools for that stroke only', async () => {
+  const line = (id: string, y: number) => ({ id, type: 'drawing' as const, lineWidth: 2, transform: { x: 100, y, width: 200, height: 1 }, points: [{ x: 0, y: 0 }, { x: 200, y: 0 }] })
+  const board = blank('first')
+  board.items = { a: line('a', 100) }
+  await saveBoard(board)
+  await mount()
+  boardState().setViewport({ x: 0, y: 0, zoom: 1 })
+  boardState().setTool('pen')
+  const surface = host.querySelector('.canvas-surface')!
+
+  await fire(surface, 'pointerdown', { pointerId: 1, pointerType: 'pen', x: 400, y: 400, button: 2, buttons: 2 })
+  await fire(window, 'pointermove', { pointerId: 1, pointerType: 'pen', x: 450, y: 450, buttons: 2 })
+  await fire(window, 'pointerup', { pointerId: 1, pointerType: 'pen', x: 450, y: 450, button: 2 })
+  expect(drawings()).toHaveLength(1) // barrel button selects, it does not draw
+  expect(boardState().tool).toBe('pen')
+
+  await fire(surface, 'pointerdown', { pointerId: 2, pointerType: 'pen', x: 150, y: 90, button: 5, buttons: 32 })
+  await fire(window, 'pointermove', { pointerId: 2, pointerType: 'pen', x: 150, y: 110, buttons: 32 })
+  await fire(window, 'pointerup', { pointerId: 2, pointerType: 'pen', x: 150, y: 110, button: 5 })
+  expect(drawings()).toHaveLength(0)
+  expect(boardState().tool).toBe('pen')
 })

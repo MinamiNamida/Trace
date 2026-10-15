@@ -14,7 +14,7 @@ function fixture() {
   board.title = '中文 <board>'
   board.frames.frame = { id: 'frame', title: 'Frame', bounds: { x: 0, y: 0, width: 900, height: 500 } }
   board.items.text = { id: 'text', type: 'text', text: '**Markdown** $x^2$', markdown: true, fontSize: 22, transform: { x: 150, y: 50, width: 200, height: 100 } }
-  board.items.code = { id: 'code', type: 'code', code: 'const x = 1', language: 'javascript', transform: { x: 50, y: 160, width: 300, height: 100 } }
+  board.items.code = { id: 'code', type: 'text', markdown: true, fontSize: 16, text: '```javascript\nconst x = 1\n```', transform: { x: 50, y: 160, width: 300, height: 100 } }
   board.items.image = image('image', 'export-image')
   board.items.excluded = image('excluded', 'missing-but-hidden')
   const story = { id: 'story', title: '中文 </script><script>bad()</script>', steps: [

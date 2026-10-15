@@ -1,6 +1,6 @@
 import type { BoardClip } from './boardOperations'
 import { loadAsset, saveAsset } from './storage'
-import { uid } from './model'
+import { migrateLegacyItem, uid } from './model'
 
 let localClip: BoardClip | null = null
 export const rememberClip = (clip: BoardClip) => { localClip = structuredClone(clip) }
@@ -43,6 +43,7 @@ export function parseClip(text: string): BoardClip | null {
     }
     if (clip.edges.some((edge: BoardClip['edges'][number]) => typeof edge.id !== 'string' || typeof edge.from !== 'string' || typeof edge.to !== 'string')) return null
     if (clip.assets && (typeof clip.assets !== 'object' || Object.values(clip.assets).some(value => typeof value !== 'string' || !/^data:image\/[\w.+-]+;base64,/.test(value)))) return null
+    clip.items = clip.items.map(migrateLegacyItem)
     return clip
   } catch { return null }
 }

@@ -12,9 +12,10 @@ import { createGuideBoard, isOriginalDemoBoard, GUIDE_START_FRAME } from './demo
 import { StoryPanel } from './StoryPanel'
 import { InlineRename } from './InlineRename'
 import { boardState, useBoard } from './store'
-import { clampZoom, fitBounds, screenToWorld, uid, unionBounds, zoomAt } from './model'
+import { isBlankMarkdown, clampZoom, fitBounds, screenToWorld, uid, unionBounds, zoomAt } from './model'
 import type { Board, CanvasItem, StrokePoint, Id, Selection, Tool, Transform, Viewport } from './model'
 import { createAutosave } from './autosave'
+import { createBackup, downloadBackup, restoreBackup } from './backup'
 import { acceptSample, realPressure, samplesOf, MAX_PEN_WIDTH, MIN_PEN_WIDTH } from './ink'
 import type { PenSettings } from './ink'
 import { deleteBoard, listBoards, loadBoard, saveAsset, saveBoard } from './storage'
@@ -64,12 +65,14 @@ export default function App() {
   const tablet = useBoard(s => s.tablet)
   const [writing, setWriting] = useState(false)
   const lastPenAt = useRef(0)
+  const drawFrame = useRef(0)
   const past = useBoard(s => s.past)
   const future = useBoard(s => s.future)
   const viewPast = useBoard(s => s.viewPast)
   const viewFuture = useBoard(s => s.viewFuture)
   const root = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const backupInput = useRef<HTMLInputElement>(null)
   const gesture = useRef<Gesture | null>(null)
   const gesturePointer = useRef<number | null>(null)
   const touches = useRef(new Map<number, { x: number; y: number }>())
@@ -127,6 +130,8 @@ export default function App() {
       const requestedStory = query.get('story')
       if (requestedStory && initial.stories[requestedStory]?.steps.length) setPresentingStoryId(requestedStory)
       setReady(true)
+      // Ask the browser not to evict this origin's storage under pressure; the board lives only here.
+      void navigator.storage?.persist?.().catch(() => {})
     })().catch(error => { if (active) setSaveState(`Could not open board: ${error instanceof Error ? error.message : String(error)}`) })
     return () => { active = false }
   }, [])
@@ -163,14 +168,14 @@ export default function App() {
   }
 
   const onSurfacePointerDownCapture = (event: React.PointerEvent) => {
-    if (event.button === 2) return
+    if (event.button === 2 && event.pointerType !== 'pen') return
     setContextMenu(null)
     if (event.pointerType === 'pen') {
       lastPenAt.current = performance.now()
       if (!boardState().tablet && !localStorage.getItem('trace.tabletPrompted')) {
         try { localStorage.setItem('trace.tabletPrompted', '1') } catch { /* storage unavailable */ }
         boardState().setTablet(true)
-        setNotice('检测到触笔，已开启平板模式：手指只用于双指平移缩放。可在右上角关闭。')
+        setNotice('检测到触笔，已开启平板模式：笔负责书写和操作，手指平移画布、双指缩放，手掌会被忽略。可在右上角关闭。')
       }
     }
     // Tablet mode: a resting palm must never act. Contacts that are large, or that arrive while the pen is in use or just left, are dropped.
@@ -201,7 +206,7 @@ export default function App() {
         return
       }
       if (touches.current.size > 2 || pinch.current) { event.stopPropagation(); return }
-      if (boardState().tablet) { event.stopPropagation(); return }
+      if (boardState().tablet) { event.stopPropagation(); gesturePointer.current = event.pointerId; startPan(event); return }
       gesturePointer.current = event.pointerId
     }
     if (!pinch.current) gesturePointer.current = event.pointerId
@@ -359,7 +364,7 @@ export default function App() {
     const item = state.board.items[id]
     if (newItemIds.current.has(id)) {
       newItemIds.current.delete(id)
-      const empty = item?.type === 'text' ? !item.text.trim() : item?.type === 'code' ? !item.code.trim() : item?.type === 'formula' ? !item.latex.trim() : false
+      const empty = item?.type === 'text' ? isBlankMarkdown(item.text) : false
       if (empty) { state.discardNewItem(id); return }
     }
     state.setEditing(null)
@@ -414,28 +419,30 @@ export default function App() {
     if (state.selection && ids.includes(state.selection.id)) state.setSelection(null)
   }
   const onBackgroundDown = (event: React.PointerEvent) => {
-    if (event.button !== 0) return
+    if (!primaryPress(event)) return
+    const tool = toolFor(event)
     if (pinch.current || (event.pointerType === 'touch' && touches.current.size > 1)) return
     if (event.pointerType === 'touch') lastTouchTap.current = null
     gesturePointer.current = event.pointerId
     const state = boardState()
     const p = screenPoint(event)
     const w = worldPoint(event)
-    if (space.current || state.tool === 'hand' || (event.pointerType === 'touch' && ['select', 'pen', 'eraser', 'frame', 'edge'].includes(state.tool))) { startPan(event); return }
+    if (space.current || tool === 'hand' || (event.pointerType === 'touch' && ['select', 'pen', 'eraser', 'frame', 'edge'].includes(tool))) { startPan(event); return }
     state.setSelection(null)
-    if (state.tool === 'text' || state.tool === 'formula' || state.tool === 'code') {
+    if (tool === 'text' || tool === 'formula' || tool === 'code') {
       const id = uid()
-      const item: CanvasItem = state.tool === 'text'
+      // Code and formulas are Markdown too: the tools start a note that already holds an empty fenced block.
+      const item: CanvasItem = tool === 'text'
         ? { id, type: 'text', text: '', markdown: true, fontSize: 20, transform: { x: w.x, y: w.y, width: 340, height: 100 } }
-        : state.tool === 'code'
-          ? { id, type: 'code', code: '', language: 'javascript', transform: { x: w.x, y: w.y, width: 480, height: 260 } }
-          : { id, type: 'formula', latex: '', transform: { x: w.x, y: w.y, width: 390, height: 74 } }
+        : tool === 'code'
+          ? { id, type: 'text', text: '```\n```', markdown: true, fontSize: 16, transform: { x: w.x, y: w.y, width: 480, height: 150 } }
+          : { id, type: 'text', text: '$$\n$$', markdown: true, fontSize: 20, transform: { x: w.x, y: w.y, width: 390, height: 90 } }
       state.change(b => { b.items[id] = item }); newItemIds.current.add(id); state.setSelection({ kind: 'item', id }); state.setTool('select'); gesture.current = { kind: 'createEdit', id }
-    } else if (state.tool === 'frame') {
+    } else if (tool === 'frame') {
       const id = uid()
       state.change(b => { b.frames[id] = { id, title: '', bounds: { x: w.x, y: w.y, width: 1, height: 1 } } })
       state.setSelection({ kind: 'frame', id }); gesture.current = { kind: 'frame', id, x: w.x, y: w.y }
-    } else if (state.tool === 'pen') {
+    } else if (tool === 'pen') {
       const id = uid()
       const pen = state.pen
       const { width: lineWidth, ...style } = pen
@@ -445,24 +452,34 @@ export default function App() {
       state.change(b => { b.items[id] = { id, type: 'drawing', points, lineWidth, pen: style, transform: { x: w.x, y: w.y, width: 1, height: 1 } } })
       setWriting(true)
       gesture.current = { kind: 'draw', id, pen, startTime: event.timeStamp, points, origin: { x: w.x, y: w.y }, minX: 0, minY: 0, maxX: 0, maxY: 0 }
-    } else if (state.tool === 'eraser') {
+    } else if (tool === 'eraser') {
       gesture.current = { kind: 'erase', last: w, started: false }
       eraseAlong(gesture.current, w, w)
-    } else if (state.tool === 'image') { setImagePosition(w); fileInput.current?.click() }
-    else if (state.tool === 'select') { gesture.current = { kind: 'marquee', x: p.x, y: p.y, currentX: p.x, currentY: p.y } }
+    } else if (tool === 'image') { setImagePosition(w); fileInput.current?.click() }
+    else if (tool === 'select') { gesture.current = { kind: 'marquee', x: p.x, y: p.y, currentX: p.x, currentY: p.y } }
   }
 
+  // Pen barrel button acts as Select, the eraser end (or eraser button) as Eraser, whatever tool is active.
+  const toolFor = (event: React.PointerEvent): Tool => {
+    if (event.pointerType === 'pen') {
+      if (event.button === 5 || (event.buttons & 32)) return 'eraser'
+      if (event.button === 2 || (event.buttons & 2)) return 'select'
+    }
+    return boardState().tool
+  }
+  const primaryPress = (event: React.PointerEvent) => event.button === 0 || (event.pointerType === 'pen' && (event.button === 2 || event.button === 5))
   const onObjectDown = (event: React.PointerEvent, kind: 'item' | 'frame' | 'edge', id: Id) => {
     event.stopPropagation()
-    if (event.button !== 0) return
+    if (!primaryPress(event)) return
+    const tool = toolFor(event)
     if (pinch.current || (event.pointerType === 'touch' && touches.current.size > 1)) return
     // Writing or framing over existing content starts a new stroke/frame instead of grabbing what is underneath.
-    if (kind !== 'edge' && ['pen', 'eraser', 'frame'].includes(boardState().tool) && boardState().editing !== id) { onBackgroundDown(event); return }
+    if (kind !== 'edge' && ['pen', 'eraser', 'frame'].includes(tool) && boardState().editing !== id) { onBackgroundDown(event); return }
     gesturePointer.current = event.pointerId
     const state = boardState()
-    if (space.current || state.tool === 'hand') { startPan(event); return }
-    if (state.tool === 'edge' && kind === 'frame') { gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }); return }
-    if (state.editing === id || (state.tool !== 'select' && state.tool !== 'eraser')) return
+    if (space.current || tool === 'hand') { startPan(event); return }
+    if (tool === 'edge' && kind === 'frame') { gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }); return }
+    if (state.editing === id || (tool !== 'select' && tool !== 'eraser')) return
     if (kind === 'edge') { state.setSelection({ kind, id }); return }
     const current = currentIds()
     const unit = event.ctrlKey || event.metaKey ? [id] : expandGroups(state.board, [id])
@@ -562,12 +579,19 @@ export default function App() {
           g.minX = Math.min(g.minX, x); g.minY = Math.min(g.minY, y); g.maxX = Math.max(g.maxX, x); g.maxY = Math.max(g.maxY, y)
           added = true
         }
-        if (added) state.replaceItem({ id: g.id, type: 'drawing', lineWidth, pen: style, points: g.points, transform: { x: g.origin.x, y: g.origin.y, width: Math.max(1, g.maxX), height: Math.max(1, g.maxY) } })
+        // Samples are collected on every event; the board is updated at most once per frame.
+        if (added && !drawFrame.current) drawFrame.current = requestAnimationFrame(() => {
+          drawFrame.current = 0
+          const live = gesture.current
+          if (live?.kind !== 'draw') return
+          const { width: w0, ...penStyle } = live.pen
+          boardState().replaceItem({ id: live.id, type: 'drawing', lineWidth: w0, pen: penStyle, points: live.points, transform: { x: live.origin.x, y: live.origin.y, width: Math.max(1, live.maxX), height: Math.max(1, live.maxY) } })
+        })
       } else if (g.kind === 'erase') {
         for (const sample of samplesOf(event)) eraseAlong(g, g.last, worldPoint(sample))
       } else if (g.kind === 'connect') setConnector({ from: g.from, x: w.x, y: w.y })
     }
-    const finishStroke = (g: Extract<Gesture, { kind: 'draw' }>) => { setWriting(false); boardState().updateGesture(board => {
+    const finishStroke = (g: Extract<Gesture, { kind: 'draw' }>) => { setWriting(false); cancelAnimationFrame(drawFrame.current); drawFrame.current = 0; boardState().updateGesture(board => {
       const item = board.items[g.id]
       if (item?.type === 'drawing') {
         item.points = g.points.map(v => ({ ...v, x: v.x - g.minX, y: v.y - g.minY }))
@@ -592,7 +616,7 @@ export default function App() {
         const now = Date.now()
         if (previous?.id === g.primary.id && now - previous.time < 400) {
           const item = state.board.items[g.primary.id]
-          if (g.primary.kind === 'frame' || item?.type === 'text' || item?.type === 'code' || item?.type === 'formula') {
+          if (g.primary.kind === 'frame' || item?.type === 'text') {
             state.beginGesture(); state.setEditing(g.primary.id)
           }
           lastTouchTap.current = null
@@ -714,14 +738,12 @@ export default function App() {
   const contentChange = (id: Id, value: string) => boardState().updateGesture(b => {
     const item = b.items[id]
     if (item?.type === 'text') { item.text = value; item.markdown = true }
-    else if (item?.type === 'code') item.code = value
-    else if (item?.type === 'formula') item.latex = value
     else if (b.frames[id]) b.frames[id].title = value
   })
   const objectDoubleClick = (kind: 'item' | 'frame', id: Id) => {
     if (boardState().editing === id) return
     const item = boardState().board.items[id]
-    if (kind === 'frame' || item?.type === 'text' || item?.type === 'code' || item?.type === 'formula') { boardState().beginGesture(); boardState().setEditing(id) }
+    if (kind === 'frame' || item?.type === 'text') { boardState().beginGesture(); boardState().setEditing(id) }
   }
   const onDrop = (event: React.DragEvent) => {
     event.preventDefault()
@@ -729,6 +751,18 @@ export default function App() {
     const p = worldPoint(event)
     files.forEach((file, index) => void addImage(file, { x: p.x + index*35, y: p.y + index*35 }))
   }
+  const exportBackup = async () => {
+    setBoardMenu(false)
+    try { const board = boardState().board; downloadBackup(board, await createBackup(board)); setNotice('已导出画板备份') }
+    catch (error) { setNotice(`导出失败：${error instanceof Error ? error.message : String(error)}`) }
+  }
+  const importBackup = (file: File) => manageBoards(async () => {
+    const imported = await restoreBackup(await file.text())
+    await saveBoard(boardState().board)
+    await saveBoard(imported)
+    activateBoard(imported)
+    setNotice('已导入为新画板')
+  })
   const renameBoard = () => {
     setBoardMenu(false)
     setRenamingBoard(true)
@@ -808,6 +842,7 @@ export default function App() {
     const target = event.target as Element
     if (target.closest('input, textarea, [contenteditable="true"], .canvas-item.editing')) return
     event.preventDefault(); event.stopPropagation()
+    if (performance.now() - lastPenAt.current < 500) return // pen barrel button, not a context-menu request
     finishEditing()
     gesture.current = null; gesturePointer.current = null; setMarquee(null); setSnapGuides([]); setConnector(null)
     const object = target.closest<HTMLElement>('[data-item-id], [data-frame-id], [data-edge-id]')
@@ -845,7 +880,7 @@ export default function App() {
     { label: '解除 Frame 内容绑定', icon: Ungroup, disabled: !frameChildren(board, frameId).length, run: () => boardState().change(board => { for (const id of frameChildren(board, frameId)) delete board.items[id].frameId }) },
     { label: '移除 Frame，保留内容', icon: Frame, run: () => { boardState().change(board => removeObjects(board, [frameId], false)); boardState().setSelection(null) } },
   )
-  if (selection && selection.kind !== 'edge' && (selection.kind === 'frame' || ['text', 'code', 'formula'].includes(board.items[selection.id]?.type))) menuActions.push({ label: selection.kind === 'frame' ? '重命名 Frame' : '编辑内容', icon: Type, run: () => objectDoubleClick(selection.kind as 'item' | 'frame', selection.id) })
+  if (selection && selection.kind !== 'edge' && (selection.kind === 'frame' || board.items[selection.id]?.type === 'text')) menuActions.push({ label: selection.kind === 'frame' ? '重命名 Frame' : '编辑内容', icon: Type, run: () => objectDoubleClick(selection.kind as 'item' | 'frame', selection.id) })
   menuActions.push('separator',
     { label: '全选', icon: MousePointer2, shortcut: `${command}A`, disabled: !Object.keys(board.items).length && !Object.keys(board.frames).length, run: () => chooseObjects([...Object.keys(boardState().board.items), ...Object.keys(boardState().board.frames)]) },
     { label: ids.length ? '聚焦所选内容' : '查看整张画板', icon: Focus, run: ids.length ? fitSelection : fitBoard },
@@ -855,7 +890,7 @@ export default function App() {
   if (!ready) return <div className="loading">{saveState.startsWith('Could not') ? saveState : 'Opening board…'}</div>
   return <div className={`app tool-${tool} ${panning ? 'is-panning' : ''} ${tablet ? 'tablet' : ''} ${writing ? 'writing' : ''}`}>
     <div className="canvas-surface" ref={root} onPointerDownCapture={onSurfacePointerDownCapture} onPointerDown={onBackgroundDown} onContextMenu={openContextMenu} onAuxClick={e => { if (e.button === 1) e.preventDefault() }} onDrop={onDrop} onDragOver={e => e.preventDefault()}>
-      <BoardRenderer board={board} viewport={viewport} mode="edit" selection={selection} multiSelection={multiSelection} editing={editing} onObjectDown={onObjectDown} onObjectDoubleClick={objectDoubleClick} onResizeDown={onResizeDown} onEdgeHandleDown={(event, id) => { if (event.button !== 0) return; gesturePointer.current = event.pointerId; gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }) }} onContentChange={contentChange} onTextHeightChange={(id, height) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'text' && height > item.transform.height) item.transform.height = height })} onCodeLanguageChange={(id, language) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'code') item.language = language })} onDoneEditing={finishEditing} />
+      <BoardRenderer board={board} viewport={viewport} mode="edit" selection={selection} multiSelection={multiSelection} editing={editing} onObjectDown={onObjectDown} onObjectDoubleClick={objectDoubleClick} onResizeDown={onResizeDown} onEdgeHandleDown={(event, id) => { if (event.button !== 0) return; gesturePointer.current = event.pointerId; gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }) }} onContentChange={contentChange} onTextHeightChange={(id, height) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'text' && height > item.transform.height) item.transform.height = height })} onDoneEditing={finishEditing} />
       {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
       {!!snapGuides.length && <svg className="alignment-guides" aria-hidden="true">{snapGuides.map(line => line.axis === 'x'
         ? <line key="x" x1={line.position * viewport.zoom + viewport.x} x2={line.position * viewport.zoom + viewport.x} y1={line.start * viewport.zoom + viewport.y} y2={line.end * viewport.zoom + viewport.y} />
@@ -864,7 +899,7 @@ export default function App() {
       {connector && <svg className="connector-preview"><line x1={(board.frames[connector.from]?.bounds.x || 0) * viewport.zoom + viewport.x} y1={((board.frames[connector.from]?.bounds.y || 0)-20) * viewport.zoom + viewport.y} x2={connector.x * viewport.zoom + viewport.x} y2={connector.y * viewport.zoom + viewport.y} /></svg>}
     </div>
 
-    <header className="topbar"><div className="board-identity"><span className="brand-mark">◌</span><div className="board-menu-anchor">{renamingBoard ? <InlineRename value={board.title} label="Board title" className="board-name-input" onCommit={title => { boardState().change(b => { b.title = title }); setBoardList(list => list.map(entry => entry.id === board.id ? { ...entry, title } : entry)) }} onClose={() => setRenamingBoard(false)} /> : <button onClick={() => setBoardMenu(value => !value)} className="board-name">{board.title}<ChevronDown size={13} /></button>}{boardMenu && <div className="board-menu"><div className="menu-caption">BOARDS</div>{boardList.map(entry => <div key={entry.id} className="board-menu-row"><button disabled={boardBusy} className={entry.id === board.id ? 'current' : ''} onClick={() => void openBoard(entry.id)}>{entry.title}</button><button disabled={boardBusy} className="board-delete" title={`Delete board: ${entry.title}`} aria-label={`Delete board: ${entry.title}`} onClick={() => void removeBoard(entry.id, entry.title)}><Trash2 size={14} /></button></div>)}<div className="menu-rule" /><button disabled={boardBusy} onClick={() => void newBoard()}>+ New blank board</button><button disabled={boardBusy} onClick={renameBoard}>Rename current board</button></div>}</div><span className="save-state">{saveState}</span></div><div className="top-actions"><button className={tablet ? 'active' : ''} title={tablet ? 'Tablet mode on — fingers only pan and zoom with two fingers' : 'Tablet mode'} aria-label="Tablet mode" aria-pressed={tablet} onClick={() => boardState().setTablet(!tablet)}><Tablet size={17} /></button><button className={`story-toggle ${showStory ? 'active' : ''}`} onClick={() => setShowStory(value => !value)}>Story</button><button title="How to use" onClick={() => setShowHelp(true)}><CircleHelp size={17} /></button></div></header>
+    <header className="topbar"><div className="board-identity"><span className="brand-mark">◌</span><div className="board-menu-anchor">{renamingBoard ? <InlineRename value={board.title} label="Board title" className="board-name-input" onCommit={title => { boardState().change(b => { b.title = title }); setBoardList(list => list.map(entry => entry.id === board.id ? { ...entry, title } : entry)) }} onClose={() => setRenamingBoard(false)} /> : <button onClick={() => setBoardMenu(value => !value)} className="board-name">{board.title}<ChevronDown size={13} /></button>}{boardMenu && <div className="board-menu"><div className="menu-caption">BOARDS</div>{boardList.map(entry => <div key={entry.id} className="board-menu-row"><button disabled={boardBusy} className={entry.id === board.id ? 'current' : ''} onClick={() => void openBoard(entry.id)}>{entry.title}</button><button disabled={boardBusy} className="board-delete" title={`Delete board: ${entry.title}`} aria-label={`Delete board: ${entry.title}`} onClick={() => void removeBoard(entry.id, entry.title)}><Trash2 size={14} /></button></div>)}<div className="menu-rule" /><button disabled={boardBusy} onClick={() => void newBoard()}>+ New blank board</button><button disabled={boardBusy} onClick={renameBoard}>Rename current board</button><button disabled={boardBusy} onClick={() => void exportBackup()}>Export board backup</button><button disabled={boardBusy} onClick={() => backupInput.current?.click()}>Import board backup…</button></div>}</div><span className="save-state">{saveState}</span></div><div className="top-actions"><button className={tablet ? 'active' : ''} title={tablet ? 'Tablet mode on — fingers only pan and zoom with two fingers' : 'Tablet mode'} aria-label="Tablet mode" aria-pressed={tablet} onClick={() => boardState().setTablet(!tablet)}><Tablet size={17} /></button><button className={`story-toggle ${showStory ? 'active' : ''}`} onClick={() => setShowStory(value => !value)}>Story</button><button title="How to use" onClick={() => setShowHelp(true)}><CircleHelp size={17} /></button></div></header>
     {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} actions={menuActions} onClose={() => setContextMenu(null)} />}
     {notice && <div className="canvas-notice" role="status">{notice}</div>}
     <div className="toolbar" role="toolbar" aria-label="Board tools">{tools.map((entry, index) => <div key={entry.id} className={index === 2 || index === 8 ? 'tool-divider' : ''}><button title={`${entry.label} · ${entry.shortcut}`} aria-label={entry.label} className={tool === entry.id ? 'active' : ''} onClick={() => { boardState().setTool(entry.id); if (entry.id === 'image') fileInput.current?.click() }}><entry.icon size={19} strokeWidth={1.75} /></button></div>)}</div>
@@ -887,9 +922,10 @@ export default function App() {
     <div className="view-controls"><button title="View back" disabled={!viewPast.length} onClick={() => boardState().viewBack()}><ArrowLeft size={17} /></button><button title="View forward" disabled={!viewFuture.length} onClick={() => boardState().viewForward()}><ArrowRight size={17} /></button><span className="control-separator" /><button title="Fit board" onClick={fitBoard}><Maximize2 size={17} /></button><button title="Zoom out" onClick={() => { const s = boardState(); s.pushView(); s.setViewport(zoomAt(s.viewport, window.innerWidth/2, window.innerHeight/2, clampZoom(s.viewport.zoom*.8))) }}>−</button><span className="zoom-label">{Math.round(viewport.zoom*100)}%</span><button title="Zoom in" onClick={() => { const s = boardState(); s.pushView(); s.setViewport(zoomAt(s.viewport, window.innerWidth/2, window.innerHeight/2, clampZoom(s.viewport.zoom/.8))) }}>+</button></div>
     <div className="history-controls"><button title="Undo · Cmd/Ctrl Z" disabled={!past.length} onClick={() => boardState().undo()}><Undo2 size={17} /></button><button title="Redo · Cmd/Ctrl Shift Z" disabled={!future.length} onClick={() => boardState().redo()}><Redo2 size={17} /></button></div>
     <div className="board-hint">{tool === 'frame' ? 'Drag to mark a region' : tool === 'edge' ? 'Drag from a frame title to another frame' : tool === 'pen' ? 'Draw directly on the board' : tool === 'eraser' ? 'Drag across strokes to erase them' : tool === 'code' ? 'Click to place a code block' : tool === 'text' ? 'Click to place a Markdown note · type $...$ for inline math' : 'Drag empty space to select · Touch and drag to pan · Pinch to zoom'}</div>
+    <input ref={backupInput} className="file-input" type="file" accept=".json,application/json" aria-label="Import board backup" onChange={e => { const file = e.target.files?.[0]; if (file) void importBackup(file); e.target.value = '' }} />
     <input ref={fileInput} className="file-input" type="file" accept="image/*" onChange={e => { const file = e.target.files?.[0]; if (file) void addImage(file, imagePosition || undefined); e.target.value = ''; setImagePosition(null) }} />
     {showStory && <StoryPanel key={board.id} board={board} viewport={viewport} activeStoryId={activeStoryId} onStoryChange={setActiveStoryId} onPresent={setPresentingStoryId} onClose={() => setShowStory(false)} onFocusFrame={(id, bounds) => focus(bounds || board.frames[id]?.bounds || null)} />}
     {presentingStoryId && board.stories[presentingStoryId]?.steps.length ? <Suspense fallback={<div className="loading presentation-loading">Opening story…</div>}><Presentation board={board} story={board.stories[presentingStoryId]} onClose={() => { setPresentingStoryId(null); if (document.fullscreenElement) void document.exitFullscreen() }} /></Suspense> : null}
-    {showHelp && <div className="modal-backdrop" onPointerDown={e => e.stopPropagation()}><div className="help-modal"><button className="modal-close" onClick={() => setShowHelp(false)}>×</button><span className="eyebrow">TRACE</span><h2>Think on the board.</h2><p>Place notes, code, images, formulas, and sketches anywhere. Draw a frame when a local idea has a name. Frames keep their contents together; moving a frame moves its content. Group blocks to select and move them as one.</p><div className="help-grid"><span>Select several</span><span>Drag an empty part of the board, or Shift + click</span><span>Group / Ungroup</span><span>⌘/Ctrl G · ⌘/Ctrl Shift G (one nesting level at a time)</span><span>Copy / Cut / Paste</span><span>⌘/Ctrl C · X · V, or right-click the canvas</span><span>Select in a group</span><span>⌘/Ctrl + click selects one member; double-click to edit</span><span>Move around</span><span>Middle button or Space + drag; one finger on empty space; trackpad scroll</span><span>Align objects</span><span>Drag near another edge or center; hold Alt to skip snapping</span><span>Tablet mode</span><span>Top-right tablet button: the pen does everything, fingers only pan and zoom with two fingers, and palm contacts are ignored</span><span>Zoom</span><span>Two finger pinch, mouse wheel, or zoom controls</span><span>Edit content</span><span>Double-click or double-tap; tap elsewhere to finish</span><span>Inline formula</span><span>Type $...$ in a Markdown note to render inline math</span><span>Code block</span><span>Press C, click the board, then choose a language</span><span>Formula source</span><span>Type LaTeX inside the selected formula box</span><span>Connect frames</span><span>Drag ↗ beside a frame title</span><span>Present</span><span>Open Story, build a path, then Present</span><span>Undo / Redo</span><span>⌘/Ctrl Z · ⌘/Ctrl Shift Z</span></div><button className="done-button" onClick={() => setShowHelp(false)}>Return to board</button></div></div>}
+    {showHelp && <div className="modal-backdrop" onPointerDown={e => e.stopPropagation()}><div className="help-modal"><button className="modal-close" onClick={() => setShowHelp(false)}>×</button><span className="eyebrow">TRACE</span><h2>Think on the board.</h2><p>Place notes, code, images, formulas, and sketches anywhere. Draw a frame when a local idea has a name. Frames keep their contents together; moving a frame moves its content. Group blocks to select and move them as one.</p><div className="help-grid"><span>Select several</span><span>Drag an empty part of the board, or Shift + click</span><span>Group / Ungroup</span><span>⌘/Ctrl G · ⌘/Ctrl Shift G (one nesting level at a time)</span><span>Copy / Cut / Paste</span><span>⌘/Ctrl C · X · V, or right-click the canvas</span><span>Select in a group</span><span>⌘/Ctrl + click selects one member; double-click to edit</span><span>Move around</span><span>Middle button or Space + drag; one finger on empty space; trackpad scroll</span><span>Align objects</span><span>Drag near another edge or center; hold Alt to skip snapping</span><span>Tablet mode</span><span>Top-right tablet button: the pen does everything, fingers only pan and zoom with two fingers, and palm contacts are ignored</span><span>Zoom</span><span>Two finger pinch, mouse wheel, or zoom controls</span><span>Edit content</span><span>Double-click or double-tap; tap elsewhere to finish</span><span>Inline formula</span><span>Type $...$ in a Markdown note to render inline math</span><span>Code block</span><span>Press C and click the board, or type ``` in any note; the language goes after the opening fence</span><span>Formula</span><span>Press F and click the board, or type $...$ inline or $$ for a block in any note</span><span>Connect frames</span><span>Drag ↗ beside a frame title</span><span>Present</span><span>Open Story, build a path, then Present</span><span>Undo / Redo</span><span>⌘/Ctrl Z · ⌘/Ctrl Shift Z</span></div><button className="done-button" onClick={() => setShowHelp(false)}>Return to board</button></div></div>}
   </div>
 }

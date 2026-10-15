@@ -1,4 +1,4 @@
-import type { Board, CanvasItem, Frame } from './model'
+import { markdownForCode, type Board, type CanvasItem, type Frame } from './model'
 import { saveAsset } from './storage'
 import { reconcileFrames } from './boardOperations'
 
@@ -40,9 +40,9 @@ export async function createGuideBoard(id = GUIDE_BOARD_ID): Promise<Board> {
   note('guide-writing', '## 让文字、代码和公式一起思考', 1028, 42, 790, 48, 25)
   note('guide-text-help', '**Text（`T`）**：点击空白处放一条笔记。  \n双击已有内容编辑；点其他地方结束。  \n支持 **Markdown**：标题、列表、代码与行内公式。', 1028, 108, 790, 120, 24)
   note('guide-markdown', '**这是可编辑的笔记**\n\n- 列出想法，再连接起来\n- 行内公式：$a^2+b^2=c^2$\n\n双击试试修改这些文字。', 1028, 247, 375, 160, 21)
-  items.push({ id: 'guide-code', type: 'code', language: 'javascript', code: '// 双击修改，再选择语言\nconst idea = "Hello, Trace";\nconsole.log(idea);', transform: { x: 1434, y: 248, width: 384, height: 160 } })
-  note('guide-formula-help', '**Code（`C`）** 添加代码块；**Formula（`F`）** 添加公式。  \n公式使用 **LaTeX**，双击下面的公式即可修改。', 1028, 432, 790, 76, 23)
-  items.push({ id: 'guide-formula', type: 'formula', latex: 'a^2 + b^2 = c^2', transform: { x: 1260, y: 522, width: 410, height: 60 } })
+  note('guide-code', markdownForCode('// 双击修改；语言写在 ``` 之后\nconst idea = "Hello, Trace";\nconsole.log(idea);', 'javascript'), 1434, 248, 384, 160, 16)
+  note('guide-formula-help', '**Code（`C`）** 添加代码块；**Formula（`F`）** 添加公式。  \n它们都是 Markdown：代码写在 ``` 之间，公式写在 `$$` 之间，双击即可修改。', 1028, 432, 790, 76, 23)
+  note('guide-formula', '$$\na^2 + b^2 = c^2\n$$', 1260, 522, 410, 60, 22)
 
   note('guide-visuals', '## 把材料摆出来，再框出一个想法', 48, 722, 790, 48, 25)
   note('guide-image-help', '**Image（`I`）** 选图，或直接拖入 / 粘贴图片。  \n拖动物件调整位置；选中后拖右下角调整大小。', 48, 788, 790, 86, 24)
@@ -69,7 +69,7 @@ export async function createGuideBoard(id = GUIDE_BOARD_ID): Promise<Board> {
     ['guide-visuals', 'guide-image-help', 'guide-image', 'guide-pen-help', 'guide-stroke', 'guide-frame-help'],
     ['guide-sharing', 'guide-story-help', 'guide-export-help', 'guide-your-board'],
   ]
-  const notes = ['邀请读者先试试平移和缩放，再用 Story 切换区域。', '双击笔记、代码与公式，演示不同内容的编辑方式。', '拖动图片、调整大小，再试试绘图和 Frame。Frame 会绑定区域内的内容。', '推进一次演示显示 Reveal 提示，然后体验导出或建立自己的空白画板。']
+  const notes = ['邀请读者先试试平移和缩放，再用 Story 切换区域。', '双击笔记，代码与公式也在笔记里编辑。', '拖动图片、调整大小，再试试绘图和 Frame。Frame 会绑定区域内的内容。', '推进一次演示显示 Reveal 提示，然后体验导出或建立自己的空白画板。']
   const board: Board = {
     id, version: 2, title: 'Trace · 白板使用指南',
     items: Object.fromEntries(items.map(item => [item.id, item])),

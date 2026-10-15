@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { produce, setAutoFreeze } from 'immer'
+import { migrateLegacyBoard } from './model'
 import type { Board, CanvasItem, Selection, Tool, Viewport } from './model'
 import { PEN_PRESETS, type PenSettings } from './ink'
 import { boundsFor, expandGroups, reconcileFrames, selectedIds } from './boardOperations'
@@ -73,7 +74,10 @@ export const useBoard = create<State>((set) => ({
   tool: 'select', selection: null, multiSelection: [], editing: null,
   past: [], future: [], viewPast: [], viewFuture: [],
   setBoard: input => {
-    const board = clone(input)
+    // Boards that are already normalised are adopted as they are, so their strokes keep the identity storage tracks.
+    // Legacy code/formula blocks become Markdown notes here, the one place every board passes through on its way in.
+    const migrated = migrateLegacyBoard(input)
+    const board = migrated.frameMembership ? migrated : clone(migrated)
     if (!board.frameMembership) { reconcileFrames(board); board.frameMembership = true }
     set({ board, past: [], future: [], viewPast: [], viewFuture: [], selection: null, multiSelection: [], editing: null })
   },

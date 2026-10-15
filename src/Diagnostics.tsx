@@ -12,6 +12,8 @@ export default function Diagnostics() {
   const graph = useRef<HTMLCanvasElement>(null)
   const [pen, setPen] = useState<PenSettings>(PEN_PRESETS.technical)
   const [stats, setStats] = useState<Stats | null>(null)
+  const [touch, setTouch] = useState('no touch yet')
+  const lastPen = useRef(0)
   const state = useRef({ points: [] as StrokePoint[], start: 0, events: 0, coalesced: 0, drawing: false })
   const penRef = useRef(pen)
   penRef.current = pen
@@ -54,6 +56,11 @@ export default function Diagnostics() {
   useEffect(() => {
     const c = canvas.current!
     const rect = () => c.getBoundingClientRect()
+    const probe = (e: PointerEvent) => {
+      if (e.pointerType === 'pen') lastPen.current = e.timeStamp
+      else if (e.pointerType === 'touch') setTouch(`touch ${e.type}: contact ${e.width.toFixed(0)}×${e.height.toFixed(0)}px, ${lastPen.current ? `${(e.timeStamp - lastPen.current).toFixed(0)}ms after last pen event` : 'no pen event yet'}`)
+    }
+    for (const type of ['pointerdown', 'pointermove', 'pointerup']) c.addEventListener(type, probe as EventListener)
     const add = (e: PointerEvent) => {
       const r = rect(), st = state.current
       st.events++
@@ -69,7 +76,7 @@ export default function Diagnostics() {
     const move = (e: PointerEvent) => { if (state.current.drawing) { add(e); render() } }
     const up = () => { state.current.drawing = false }
     c.addEventListener('pointerdown', down); c.addEventListener('pointermove', move); c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up)
-    return () => { c.removeEventListener('pointerdown', down); c.removeEventListener('pointermove', move); c.removeEventListener('pointerup', up); c.removeEventListener('pointercancel', up) }
+    return () => { for (const type of ['pointerdown', 'pointermove', 'pointerup']) c.removeEventListener(type, probe as EventListener); c.removeEventListener('pointerdown', down); c.removeEventListener('pointermove', move); c.removeEventListener('pointerup', up); c.removeEventListener('pointercancel', up) }
   }, [])
   useEffect(render, [pen])
 
@@ -82,6 +89,7 @@ export default function Diagnostics() {
       <label>Smooth {pen.smoothing.toFixed(2)} <input type="range" min="0" max="1" step=".05" value={pen.smoothing} onChange={e => setPen({ ...pen, smoothing: Number(e.target.value) })} /></label>
       <label>Curve {pen.curve.toFixed(2)} <input type="range" min=".4" max="2.5" step=".05" value={pen.curve} onChange={e => setPen({ ...pen, curve: Number(e.target.value) })} /></label>
       {stats && <pre style={{ margin: 0 }}>{`samples ${stats.raw}\nevents ${stats.events} (coalesced ${stats.coalescedEvents})\ndt mean ${stats.meanDt.toFixed(1)}ms  max ${stats.maxDt}ms\nrender ${stats.renderMs.toFixed(2)}ms\nmax raw→outline ${stats.maxDeviation.toFixed(2)}px`}</pre>}
+      <div title="Palm rejection drops contacts larger than 40px or within 700ms of the pen">{touch}</div>
       <div>Pressure: raw <span style={{ color: '#718b85' }}>■</span> curved <span style={{ color: '#c0392b' }}>■</span></div>
       <canvas ref={graph} style={{ width: 240, height: 60, background: '#fff', border: '1px solid #ddd' }} />
       <a href={window.location.pathname}>Back to editor</a>
