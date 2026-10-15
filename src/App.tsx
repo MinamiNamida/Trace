@@ -3,7 +3,7 @@ import { Tablet, ArrowLeft, ArrowRight, ChevronDown, CircleHelp, ClipboardPaste,
 import { BoardRenderer } from './BoardRenderer'
 import { ContextMenu } from './ContextMenu'
 import type { MenuAction } from './ContextMenu'
-import { boundsFor, canGroup, createClip, expandGroups, frameChildren, groupObjects, insertClip, reconcileFrame, reconcileFrames, removeObjects, rootIds, selectedGroups, selectedIds, selectionBounds, ungroupObjects, withFrameChildren, wrapInFrame } from './boardOperations'
+import { strokesUnderEraser, boundsFor, canGroup, createClip, expandGroups, frameChildren, groupObjects, insertClip, reconcileFrame, reconcileFrames, removeObjects, rootIds, selectedGroups, selectedIds, selectionBounds, ungroupObjects, withFrameChildren, wrapInFrame } from './boardOperations'
 import type { BoardClip } from './boardOperations'
 import { parseClip, recalledClip, rememberClip, restoreClipAssets, writeClip } from './boardClipboard'
 import { snapMove, snapResize } from './alignment'
@@ -26,6 +26,7 @@ type Gesture =
   | { kind: 'moveMulti'; x: number; y: number; originals: Record<Id, Transform>; started: boolean; primary: { kind: 'item' | 'frame'; id: Id } }
   | { kind: 'resize'; target: Exclude<Selection, null>; x: number; y: number; original: Transform; originalPoints?: { x: number; y: number; pressure?: number }[]; started: boolean }
   | { kind: 'draw'; id: Id; points: StrokePoint[]; pen: PenSettings; startTime: number; origin: { x: number; y: number }; minX: number; minY: number; maxX: number; maxY: number }
+  | { kind: 'erase'; last: { x: number; y: number }; started: boolean }
   | { kind: 'frame'; id: Id; x: number; y: number }
   | { kind: 'connect'; from: Id }
 
@@ -42,6 +43,7 @@ const tools: { id: Tool; label: string; shortcut: string; icon: typeof MousePoin
   { id: 'edge', label: 'Frame edge', shortcut: 'L', icon: Waypoints },
 ]
 
+const ERASER_RADIUS = 7 // screen px
 const PALM_GUARD_MS = 700
 const PALM_SIZE = 40
 const viewportEqual = (a: Viewport, b: Viewport) => Math.abs(a.x-b.x) < 1 && Math.abs(a.y-b.y) < 1 && Math.abs(a.zoom-b.zoom) < .001
@@ -402,6 +404,15 @@ export default function App() {
     return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp) }
   }, [])
 
+  const eraseAlong = (g: Extract<Gesture, { kind: 'erase' }>, from: { x: number; y: number }, to: { x: number; y: number }) => {
+    const state = boardState()
+    const ids = strokesUnderEraser(state.board, from, to, ERASER_RADIUS / state.viewport.zoom)
+    g.last = to
+    if (!ids.length) return
+    if (!g.started) { state.beginGesture(); g.started = true }
+    state.updateGesture(board => removeObjects(board, ids))
+    if (state.selection && ids.includes(state.selection.id)) state.setSelection(null)
+  }
   const onBackgroundDown = (event: React.PointerEvent) => {
     if (event.button !== 0) return
     if (pinch.current || (event.pointerType === 'touch' && touches.current.size > 1)) return
@@ -434,6 +445,9 @@ export default function App() {
       state.change(b => { b.items[id] = { id, type: 'drawing', points, lineWidth, pen: style, transform: { x: w.x, y: w.y, width: 1, height: 1 } } })
       setWriting(true)
       gesture.current = { kind: 'draw', id, pen, startTime: event.timeStamp, points, origin: { x: w.x, y: w.y }, minX: 0, minY: 0, maxX: 0, maxY: 0 }
+    } else if (state.tool === 'eraser') {
+      gesture.current = { kind: 'erase', last: w, started: false }
+      eraseAlong(gesture.current, w, w)
     } else if (state.tool === 'image') { setImagePosition(w); fileInput.current?.click() }
     else if (state.tool === 'select') { gesture.current = { kind: 'marquee', x: p.x, y: p.y, currentX: p.x, currentY: p.y } }
   }
@@ -443,11 +457,10 @@ export default function App() {
     if (event.button !== 0) return
     if (pinch.current || (event.pointerType === 'touch' && touches.current.size > 1)) return
     // Writing or framing over existing content starts a new stroke/frame instead of grabbing what is underneath.
-    if (kind !== 'edge' && ['pen', 'frame'].includes(boardState().tool) && boardState().editing !== id) { onBackgroundDown(event); return }
+    if (kind !== 'edge' && ['pen', 'eraser', 'frame'].includes(boardState().tool) && boardState().editing !== id) { onBackgroundDown(event); return }
     gesturePointer.current = event.pointerId
     const state = boardState()
     if (space.current || state.tool === 'hand') { startPan(event); return }
-    if (state.tool === 'eraser' && kind === 'item' && state.board.items[id]?.type === 'drawing') { state.change(b => removeObjects(b, [id])); return }
     if (state.tool === 'edge' && kind === 'frame') { gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }); return }
     if (state.editing === id || (state.tool !== 'select' && state.tool !== 'eraser')) return
     if (kind === 'edge') { state.setSelection({ kind, id }); return }
@@ -550,6 +563,8 @@ export default function App() {
           added = true
         }
         if (added) state.replaceItem({ id: g.id, type: 'drawing', lineWidth, pen: style, points: g.points, transform: { x: g.origin.x, y: g.origin.y, width: Math.max(1, g.maxX), height: Math.max(1, g.maxY) } })
+      } else if (g.kind === 'erase') {
+        for (const sample of samplesOf(event)) eraseAlong(g, g.last, worldPoint(sample))
       } else if (g.kind === 'connect') setConnector({ from: g.from, x: w.x, y: w.y })
     }
     const finishStroke = (g: Extract<Gesture, { kind: 'draw' }>) => { setWriting(false); boardState().updateGesture(board => {
@@ -871,7 +886,7 @@ export default function App() {
     </div>}
     <div className="view-controls"><button title="View back" disabled={!viewPast.length} onClick={() => boardState().viewBack()}><ArrowLeft size={17} /></button><button title="View forward" disabled={!viewFuture.length} onClick={() => boardState().viewForward()}><ArrowRight size={17} /></button><span className="control-separator" /><button title="Fit board" onClick={fitBoard}><Maximize2 size={17} /></button><button title="Zoom out" onClick={() => { const s = boardState(); s.pushView(); s.setViewport(zoomAt(s.viewport, window.innerWidth/2, window.innerHeight/2, clampZoom(s.viewport.zoom*.8))) }}>−</button><span className="zoom-label">{Math.round(viewport.zoom*100)}%</span><button title="Zoom in" onClick={() => { const s = boardState(); s.pushView(); s.setViewport(zoomAt(s.viewport, window.innerWidth/2, window.innerHeight/2, clampZoom(s.viewport.zoom/.8))) }}>+</button></div>
     <div className="history-controls"><button title="Undo · Cmd/Ctrl Z" disabled={!past.length} onClick={() => boardState().undo()}><Undo2 size={17} /></button><button title="Redo · Cmd/Ctrl Shift Z" disabled={!future.length} onClick={() => boardState().redo()}><Redo2 size={17} /></button></div>
-    <div className="board-hint">{tool === 'frame' ? 'Drag to mark a region' : tool === 'edge' ? 'Drag from a frame title to another frame' : tool === 'pen' ? 'Draw directly on the board' : tool === 'eraser' ? 'Click a stroke to erase' : tool === 'code' ? 'Click to place a code block' : tool === 'text' ? 'Click to place a Markdown note · type $...$ for inline math' : 'Drag empty space to select · Touch and drag to pan · Pinch to zoom'}</div>
+    <div className="board-hint">{tool === 'frame' ? 'Drag to mark a region' : tool === 'edge' ? 'Drag from a frame title to another frame' : tool === 'pen' ? 'Draw directly on the board' : tool === 'eraser' ? 'Drag across strokes to erase them' : tool === 'code' ? 'Click to place a code block' : tool === 'text' ? 'Click to place a Markdown note · type $...$ for inline math' : 'Drag empty space to select · Touch and drag to pan · Pinch to zoom'}</div>
     <input ref={fileInput} className="file-input" type="file" accept="image/*" onChange={e => { const file = e.target.files?.[0]; if (file) void addImage(file, imagePosition || undefined); e.target.value = ''; setImagePosition(null) }} />
     {showStory && <StoryPanel key={board.id} board={board} viewport={viewport} activeStoryId={activeStoryId} onStoryChange={setActiveStoryId} onPresent={setPresentingStoryId} onClose={() => setShowStory(false)} onFocusFrame={(id, bounds) => focus(bounds || board.frames[id]?.bounds || null)} />}
     {presentingStoryId && board.stories[presentingStoryId]?.steps.length ? <Suspense fallback={<div className="loading presentation-loading">Opening story…</div>}><Presentation board={board} story={board.stories[presentingStoryId]} onClose={() => { setPresentingStoryId(null); if (document.fullscreenElement) void document.exitFullscreen() }} /></Suspense> : null}

@@ -333,3 +333,23 @@ test('tablet mode ignores single fingers and touches that arrive while the pen i
   await fire(window, 'pointermove', { pointerId: 6, pointerType: 'touch', x: 360, y: 200 })
   expect(boardState().viewport.zoom).toBeGreaterThan(start.zoom)
 })
+
+test('dragging the eraser across strokes removes each one it crosses as a single undo step', async () => {
+  const line = (id: string, y: number) => ({ id, type: 'drawing' as const, lineWidth: 2, transform: { x: 100, y, width: 200, height: 1 }, points: [{ x: 0, y: 0 }, { x: 200, y: 0 }] })
+  const board = blank('first')
+  board.items = { a: line('a', 100), b: line('b', 140), c: line('c', 400) }
+  await saveBoard(board)
+  await mount()
+  boardState().setViewport({ x: 0, y: 0, zoom: 1 })
+  boardState().setTool('eraser')
+  const surface = host.querySelector('.canvas-surface')!
+  const before = boardState().past.length
+  await fire(surface, 'pointerdown', { pointerId: 1, pointerType: 'pen', x: 150, y: 80 })
+  await fire(window, 'pointermove', { pointerId: 1, pointerType: 'pen', x: 150, y: 120 })
+  await fire(window, 'pointermove', { pointerId: 1, pointerType: 'pen', x: 150, y: 170 })
+  await fire(window, 'pointerup', { pointerId: 1, pointerType: 'pen', x: 150, y: 170 })
+  expect(Object.keys(boardState().board.items)).toEqual(['c'])
+  expect(boardState().past.length).toBe(before + 1)
+  await act(async () => boardState().undo())
+  expect(Object.keys(boardState().board.items).sort()).toEqual(['a', 'b', 'c'])
+})

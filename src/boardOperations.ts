@@ -131,3 +131,34 @@ export function insertClip(board: Board, clip: BoardClip, at?: { x: number; y: n
   reconcileFrames(board, inserted.filter(id => !board.items[id]?.frameId))
   return rootIds(board, inserted)
 }
+
+const pointSegmentDistance = (p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }) => {
+  const dx = b.x - a.x, dy = b.y - a.y, length = dx * dx + dy * dy
+  const t = length ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / length)) : 0
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+}
+const segmentsCross = (a: { x: number; y: number }, b: { x: number; y: number }, c: { x: number; y: number }, d: { x: number; y: number }) => {
+  const side = (p: typeof a, q: typeof a, r: typeof a) => Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x))
+  return side(a, b, c) !== side(a, b, d) && side(c, d, a) !== side(c, d, b)
+}
+const segmentDistance = (a: { x: number; y: number }, b: { x: number; y: number }, c: { x: number; y: number }, d: { x: number; y: number }) =>
+  segmentsCross(a, b, c, d) ? 0 : Math.min(pointSegmentDistance(a, c, d), pointSegmentDistance(b, c, d), pointSegmentDistance(c, a, b), pointSegmentDistance(d, a, b))
+
+/** Strokes touched by an eraser sweeping from `from` to `to` (world coordinates) with the given radius. */
+export function strokesUnderEraser(board: Board, from: { x: number; y: number }, to: { x: number; y: number }, radius: number): Id[] {
+  const left = Math.min(from.x, to.x) - radius, right = Math.max(from.x, to.x) + radius
+  const top = Math.min(from.y, to.y) - radius, bottom = Math.max(from.y, to.y) + radius
+  const hits: Id[] = []
+  for (const item of Object.values(board.items)) {
+    if (item.type !== 'drawing' || !item.points.length) continue
+    const { x: ox, y: oy } = item.transform
+    const reach = radius + item.lineWidth / 2
+    if (ox - reach > right || ox + item.transform.width + reach < left || oy - reach > bottom || oy + item.transform.height + reach < top) continue
+    const points = item.points.map(p => ({ x: ox + p.x, y: oy + p.y }))
+    const touched = points.length === 1
+      ? pointSegmentDistance(points[0], from, to) <= reach
+      : points.some((p, i) => i > 0 && segmentDistance(from, to, points[i - 1], p) <= reach)
+    if (touched) hits.push(item.id)
+  }
+  return hits
+}
