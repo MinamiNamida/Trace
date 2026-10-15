@@ -1,12 +1,14 @@
 export type Id = string
 export type Transform = { x: number; y: number; width: number; height: number; rotation?: number }
-export type StrokePoint = { x: number; y: number; pressure?: number }
+export type StrokePoint = { x: number; y: number; pressure?: number; t?: number }
+/** Absent on legacy strokes, which keep their original rendering. */
+export type PenStyle = { mode: 'ink' | 'technical'; smoothing: number; pressure: boolean; curve: number }
 type BaseItem = { id: Id; transform: Transform; groupIds?: Id[]; frameId?: Id }
 export type TextItem = BaseItem & { type: 'text'; text: string; fontSize: number; bold?: boolean; markdown?: boolean }
 export type CodeItem = BaseItem & { type: 'code'; code: string; language: string }
 export type FormulaItem = BaseItem & { type: 'formula'; latex: string }
 export type ImageItem = BaseItem & { type: 'image'; assetId: Id; alt?: string }
-export type DrawingItem = BaseItem & { type: 'drawing'; points: StrokePoint[]; lineWidth: number }
+export type DrawingItem = BaseItem & { type: 'drawing'; points: StrokePoint[]; lineWidth: number; pen?: PenStyle }
 export type CanvasItem = TextItem | CodeItem | FormulaItem | ImageItem | DrawingItem
 export type Frame = { id: Id; title?: string; bounds: Transform; groupIds?: Id[] }
 export type FrameEdge = { id: Id; from: Id; to: Id }

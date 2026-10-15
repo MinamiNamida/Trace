@@ -6,6 +6,7 @@ import { MarkdownText } from './MarkdownText'
 import { selectionBounds } from './boardOperations'
 import type { Board, CanvasItem, DrawingItem, Frame, Id, Selection, Transform, Viewport } from './model'
 import { loadAsset } from './storage'
+import { strokeInput, strokeOptions } from './ink'
 
 const pathCache = new WeakMap<DrawingItem, string>()
 export function strokePath(item: DrawingItem) {
@@ -16,9 +17,9 @@ export function strokePath(item: DrawingItem) {
   return path
 }
 function computeStrokePath(item: DrawingItem) {
-  const outline = getStroke(item.points.map(p => [p.x, p.y, p.pressure ?? .5]), { size: item.lineWidth, thinning: .22, smoothing: .65, streamline: .42, simulatePressure: true })
+  const outline = getStroke(strokeInput(item), strokeOptions(item))
   if (!outline.length) return ''
-  const points = outline.map(p => [Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10])
+  const points = outline.map(p => [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100])
   return `M ${points[0][0]} ${points[0][1]} ${points.slice(1).map(p => `L ${p[0]} ${p[1]}`).join(' ')} Z`
 }
 

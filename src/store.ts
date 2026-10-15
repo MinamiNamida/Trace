@@ -1,11 +1,14 @@
 import { create } from 'zustand'
 import type { Board, CanvasItem, Selection, Tool, Viewport } from './model'
+import { PEN_PRESETS, type PenSettings } from './ink'
 import { boundsFor, expandGroups, reconcileFrames, selectedIds } from './boardOperations'
 
 type State = {
   board: Board
   viewport: Viewport
   tool: Tool
+  pen: PenSettings
+  setPen: (pen: Partial<PenSettings>) => void
   selection: Selection
   multiSelection: string[]
   editing: string | null
@@ -39,9 +42,22 @@ const restoredSelection = (board: Board, state: State): Pick<State, 'selection' 
   return ids.length === 1 ? { selection: { kind: board.frames[ids[0]] ? 'frame' : 'item', id: ids[0] }, multiSelection: [] } : { selection: null, multiSelection: ids }
 }
 
+const PEN_KEY = 'trace.pen'
+const loadPen = (): PenSettings => {
+  try { const saved = JSON.parse(localStorage.getItem(PEN_KEY) || 'null'); if (saved && PEN_PRESETS[saved.mode as 'ink'] && Number.isFinite(saved.width)) return { ...PEN_PRESETS[saved.mode as 'ink'], ...saved } } catch { /* storage unavailable */ }
+  return PEN_PRESETS.technical
+}
+
 export const useBoard = create<State>((set) => ({
   board: emptyBoard,
   viewport: { x: 100, y: 100, zoom: 1 },
+  pen: loadPen(),
+  setPen: patch => set(state => {
+    // Switching mode loads that mode's preset; individual fields then adjust it.
+    const pen = patch.mode && patch.mode !== state.pen.mode ? { ...PEN_PRESETS[patch.mode], ...patch } : { ...state.pen, ...patch }
+    try { localStorage.setItem(PEN_KEY, JSON.stringify(pen)) } catch { /* storage unavailable */ }
+    return { pen }
+  }),
   tool: 'select', selection: null, multiSelection: [], editing: null,
   past: [], future: [], viewPast: [], viewFuture: [],
   setBoard: input => {

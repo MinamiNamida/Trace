@@ -13,8 +13,10 @@ import { StoryPanel } from './StoryPanel'
 import { InlineRename } from './InlineRename'
 import { boardState, useBoard } from './store'
 import { clampZoom, fitBounds, screenToWorld, uid, unionBounds, zoomAt } from './model'
-import type { Board, CanvasItem, Id, Selection, Tool, Transform, Viewport } from './model'
+import type { Board, CanvasItem, StrokePoint, Id, Selection, Tool, Transform, Viewport } from './model'
 import { createAutosave } from './autosave'
+import { acceptSample, realPressure, samplesOf, MAX_PEN_WIDTH, MIN_PEN_WIDTH } from './ink'
+import type { PenSettings } from './ink'
 import { deleteBoard, listBoards, loadBoard, saveAsset, saveBoard } from './storage'
 
 type Gesture =
@@ -23,7 +25,7 @@ type Gesture =
   | { kind: 'createEdit'; id: Id }
   | { kind: 'moveMulti'; x: number; y: number; originals: Record<Id, Transform>; started: boolean; primary: { kind: 'item' | 'frame'; id: Id } }
   | { kind: 'resize'; target: Exclude<Selection, null>; x: number; y: number; original: Transform; originalPoints?: { x: number; y: number; pressure?: number }[]; started: boolean }
-  | { kind: 'draw'; id: Id; lineWidth: number; points: { x: number; y: number; pressure: number }[]; minX: number; minY: number; maxX: number; maxY: number }
+  | { kind: 'draw'; id: Id; points: StrokePoint[]; pen: PenSettings; startTime: number; minX: number; minY: number; maxX: number; maxY: number }
   | { kind: 'frame'; id: Id; x: number; y: number }
   | { kind: 'connect'; from: Id }
 
@@ -54,6 +56,7 @@ export default function App() {
   const selection = useBoard(s => s.selection)
   const multiSelection = useBoard(s => s.multiSelection)
   const editing = useBoard(s => s.editing)
+  const pen = useBoard(s => s.pen)
   const past = useBoard(s => s.past)
   const future = useBoard(s => s.future)
   const viewPast = useBoard(s => s.viewPast)
@@ -404,9 +407,12 @@ export default function App() {
       state.setSelection({ kind: 'frame', id }); gesture.current = { kind: 'frame', id, x: w.x, y: w.y }
     } else if (state.tool === 'pen') {
       const id = uid()
-      const points = [{ x: w.x, y: w.y, pressure: event.pressure || .5 }]
-      state.change(b => { b.items[id] = { id, type: 'drawing', points: [{ x: 0, y: 0, pressure: event.pressure || .5 }], lineWidth: 3, transform: { x: w.x, y: w.y, width: 1, height: 1 } } })
-      gesture.current = { kind: 'draw', id, lineWidth: 3, points, minX: w.x, minY: w.y, maxX: w.x, maxY: w.y }
+      const pen = state.pen
+      const { width: lineWidth, ...style } = pen
+      const pressure = style.pressure ? realPressure(event.nativeEvent) : undefined
+      const points: StrokePoint[] = [{ x: w.x, y: w.y, pressure, t: 0 }]
+      state.change(b => { b.items[id] = { id, type: 'drawing', points: [{ x: 0, y: 0, pressure, t: 0 }], lineWidth, pen: style, transform: { x: w.x, y: w.y, width: 1, height: 1 } } })
+      gesture.current = { kind: 'draw', id, pen, startTime: event.timeStamp, points, minX: w.x, minY: w.y, maxX: w.x, maxY: w.y }
     } else if (state.tool === 'image') { setImagePosition(w); fileInput.current?.click() }
     else if (state.tool === 'select') { gesture.current = { kind: 'marquee', x: p.x, y: p.y, currentX: p.x, currentY: p.y } }
   }
@@ -510,9 +516,16 @@ export default function App() {
       } else if (g.kind === 'frame') {
         state.updateGesture(b => { if (b.frames[g.id]) b.frames[g.id].bounds = { x: Math.min(g.x, w.x), y: Math.min(g.y, w.y), width: Math.max(40, Math.abs(w.x-g.x)), height: Math.max(40, Math.abs(w.y-g.y)) } })
       } else if (g.kind === 'draw') {
-        g.points.push({ x: w.x, y: w.y, pressure: event.pressure || .5 })
-        g.minX = Math.min(g.minX, w.x); g.minY = Math.min(g.minY, w.y); g.maxX = Math.max(g.maxX, w.x); g.maxY = Math.max(g.maxY, w.y)
-        state.replaceItem({ id: g.id, type: 'drawing', lineWidth: g.lineWidth, points: g.points.map(v => ({ x: v.x-g.minX, y: v.y-g.minY, pressure: v.pressure })), transform: { x: g.minX, y: g.minY, width: Math.max(1,g.maxX-g.minX), height: Math.max(1,g.maxY-g.minY) } })
+        const { width: lineWidth, ...style } = g.pen
+        let added = false
+        for (const sample of samplesOf(event)) {
+          const sw = worldPoint(sample), t = Math.round(sample.timeStamp - g.startTime)
+          if (!acceptSample(g.points.at(-1), sw.x, sw.y, t)) continue
+          g.points.push({ x: sw.x, y: sw.y, pressure: style.pressure ? realPressure(sample) : undefined, t })
+          g.minX = Math.min(g.minX, sw.x); g.minY = Math.min(g.minY, sw.y); g.maxX = Math.max(g.maxX, sw.x); g.maxY = Math.max(g.maxY, sw.y)
+          added = true
+        }
+        if (added) state.replaceItem({ id: g.id, type: 'drawing', lineWidth, pen: style, points: g.points.map(v => ({ ...v, x: v.x-g.minX, y: v.y-g.minY })), transform: { x: g.minX, y: g.minY, width: Math.max(1,g.maxX-g.minX), height: Math.max(1,g.maxY-g.minY) } })
       } else if (g.kind === 'connect') setConnector({ from: g.from, x: w.x, y: w.y })
     }
     const up = (event: PointerEvent) => {
@@ -807,9 +820,20 @@ export default function App() {
     {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} actions={menuActions} onClose={() => setContextMenu(null)} />}
     {notice && <div className="canvas-notice" role="status">{notice}</div>}
     <div className="toolbar" role="toolbar" aria-label="Board tools">{tools.map((entry, index) => <div key={entry.id} className={index === 2 || index === 8 ? 'tool-divider' : ''}><button title={`${entry.label} · ${entry.shortcut}`} aria-label={entry.label} className={tool === entry.id ? 'active' : ''} onClick={() => { boardState().setTool(entry.id); if (entry.id === 'image') fileInput.current?.click() }}><entry.icon size={19} strokeWidth={1.75} /></button></div>)}</div>
+    {tool === 'pen' && !showStory && <div className="pen-panel" role="group" aria-label="Pen settings" onPointerDown={e => e.stopPropagation()}>
+      <button className={pen.mode === 'technical' ? 'active' : ''} onClick={() => boardState().setPen({ mode: 'technical' })}>Technical</button>
+      <button className={pen.mode === 'ink' ? 'active' : ''} onClick={() => boardState().setPen({ mode: 'ink' })}>Ink</button>
+      <span className="control-separator" />
+      <button title="Thinner" aria-label="Thinner pen" onClick={() => boardState().setPen({ width: Math.max(MIN_PEN_WIDTH, pen.width - .25) })}>−</button>
+      <span className="pen-value">{pen.width.toFixed(2)}</span>
+      <button title="Thicker" aria-label="Thicker pen" onClick={() => boardState().setPen({ width: Math.min(MAX_PEN_WIDTH, pen.width + .25) })}>+</button>
+      <label>Smooth<input type="range" min="0" max="1" step=".05" value={pen.smoothing} onChange={e => boardState().setPen({ smoothing: Number(e.target.value) })} /></label>
+      {pen.mode === 'ink' && <><label className="pen-check"><input type="checkbox" checked={pen.pressure} onChange={e => boardState().setPen({ pressure: e.target.checked })} />Pressure</label>
+      {pen.pressure && <label>Curve<input type="range" min=".4" max="2.5" step=".05" value={pen.curve} onChange={e => boardState().setPen({ curve: Number(e.target.value) })} /></label>}</>}
+    </div>}
     {!showStory && <div className="context-controls">
       {selection?.kind === 'item' && board.items[selection.id]?.type === 'text' && <><button title="Toggle bold" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'text') item.bold = !item.bold })}>B</button><button title="Smaller text" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'text') item.fontSize = Math.max(12, item.fontSize-2) })}>A−</button><button title="Larger text" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'text') item.fontSize = Math.min(48, item.fontSize+2) })}>A+</button></>}
-      {selection?.kind === 'item' && board.items[selection.id]?.type === 'drawing' && <><button title="Thinner stroke" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'drawing') item.lineWidth = Math.max(1, item.lineWidth-1) })}>−</button><button title="Thicker stroke" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'drawing') item.lineWidth = Math.min(12, item.lineWidth+1) })}>+</button></>}
+      {selection?.kind === 'item' && board.items[selection.id]?.type === 'drawing' && <><button title="Thinner stroke" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'drawing') item.lineWidth = Math.max(MIN_PEN_WIDTH, item.lineWidth-(item.pen ? .25 : 1)) })}>−</button><button title="Thicker stroke" onClick={() => boardState().change(b => { const item = b.items[selection.id]; if (item?.type === 'drawing') item.lineWidth = Math.min(MAX_PEN_WIDTH, item.lineWidth+(item.pen ? .25 : 1)) })}>+</button></>}
       {(selection || multiSelection.length > 0) && <><button title="Fit selection" onClick={fitSelection}><Focus size={16} /></button>{canGroup(board, ids) && <button title="编组 · Cmd/Ctrl G" onClick={groupSelection}><Group size={16} /></button>}{selectedGroups(board, ids).length > 0 && <button title="取消编组 · Cmd/Ctrl Shift G" onClick={ungroupSelection}><Ungroup size={16} /></button>}<button title="Delete selected" onClick={removeSelection}><Trash2 size={16} /></button></>}
     </div>}
     <div className="view-controls"><button title="View back" disabled={!viewPast.length} onClick={() => boardState().viewBack()}><ArrowLeft size={17} /></button><button title="View forward" disabled={!viewFuture.length} onClick={() => boardState().viewForward()}><ArrowRight size={17} /></button><span className="control-separator" /><button title="Fit board" onClick={fitBoard}><Maximize2 size={17} /></button><button title="Zoom out" onClick={() => { const s = boardState(); s.pushView(); s.setViewport(zoomAt(s.viewport, window.innerWidth/2, window.innerHeight/2, clampZoom(s.viewport.zoom*.8))) }}>−</button><span className="zoom-label">{Math.round(viewport.zoom*100)}%</span><button title="Zoom in" onClick={() => { const s = boardState(); s.pushView(); s.setViewport(zoomAt(s.viewport, window.innerWidth/2, window.innerHeight/2, clampZoom(s.viewport.zoom/.8))) }}>+</button></div>
