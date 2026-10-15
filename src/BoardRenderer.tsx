@@ -23,10 +23,13 @@ function computeStrokePath(item: DrawingItem) {
   return `M ${points[0][0]} ${points[0][1]} ${points.slice(1).map(p => `L ${p[0]} ${p[1]}`).join(' ')} Z`
 }
 
+// Hits on a stroke follow the stroke itself, not its bounding box, so writing next to old ink is never intercepted.
+const centerline = (item: DrawingItem) => item.points.length ? `M ${item.points[0].x} ${item.points[0].y} ${item.points.slice(1).map(p => `L ${p.x} ${p.y}`).join(' ')}${item.points.length === 1 ? ` L ${item.points[0].x} ${item.points[0].y}` : ''}` : ''
+
 // Re-renders only when its own item object (or visibility) changes, so a stroke being drawn does not repaint the others.
 const StrokeShape = memo(function StrokeShape({ item, hidden, onDown }: { item: DrawingItem; hidden: boolean; onDown?: (event: React.PointerEvent, id: Id) => void }) {
   return <g data-item-id={item.id} transform={`translate(${item.transform.x} ${item.transform.y})`} style={hidden ? { visibility: 'hidden' } : undefined} onPointerDown={onDown ? e => onDown(e, item.id) : undefined}>
-    <path d={strokePath(item)} fill="#333431" opacity=".88" /><rect width={item.transform.width} height={item.transform.height} fill="transparent" className="drawing-hit" />
+    <path d={strokePath(item)} fill="#333431" opacity=".88" /><path d={centerline(item)} className="drawing-hit" fill="none" stroke="transparent" strokeWidth={Math.max(item.lineWidth, 12)} strokeLinecap="round" strokeLinejoin="round" />
   </g>
 })
 

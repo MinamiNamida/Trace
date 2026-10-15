@@ -9,6 +9,8 @@ type State = {
   viewport: Viewport
   tool: Tool
   pen: PenSettings
+  tablet: boolean
+  setTablet: (on: boolean) => void
   setPen: (pen: Partial<PenSettings>) => void
   selection: Selection
   multiSelection: string[]
@@ -47,6 +49,7 @@ const restoredSelection = (board: Board, state: State): Pick<State, 'selection' 
 }
 
 const PEN_KEY = 'trace.pen'
+const TABLET_KEY = 'trace.tablet'
 const loadPen = (): PenSettings => {
   try { const saved = JSON.parse(localStorage.getItem(PEN_KEY) || 'null'); if (saved && PEN_PRESETS[saved.mode as 'ink'] && Number.isFinite(saved.width)) return { ...PEN_PRESETS[saved.mode as 'ink'], ...saved } } catch { /* storage unavailable */ }
   return PEN_PRESETS.technical
@@ -55,6 +58,11 @@ const loadPen = (): PenSettings => {
 export const useBoard = create<State>((set) => ({
   board: emptyBoard,
   viewport: { x: 100, y: 100, zoom: 1 },
+  tablet: (() => { try { return localStorage.getItem(TABLET_KEY) === '1' } catch { return false } })(),
+  setTablet: on => {
+    try { localStorage.setItem(TABLET_KEY, on ? '1' : '0') } catch { /* storage unavailable */ }
+    set(state => on ? { tablet: true, tool: 'pen', editing: null, pen: state.pen } : { tablet: false })
+  },
   pen: loadPen(),
   setPen: patch => set(state => {
     // Switching mode loads that mode's preset; individual fields then adjust it.

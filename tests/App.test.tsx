@@ -292,3 +292,44 @@ test('pen draws, finger with the pen tool pans instead, and a finger cannot inte
   expect(drawings()).toHaveLength(1)
   expect((drawings()[0] as { points: unknown[] }).points).toHaveLength(3)
 })
+
+test('writing with the pen over existing ink starts a new stroke instead of grabbing the old one', async () => {
+  const board = blank('first')
+  board.items = { old: { id: 'old', type: 'drawing', lineWidth: 2, transform: { x: 0, y: 0, width: 400, height: 400 }, points: [{ x: 0, y: 0 }, { x: 400, y: 400 }] } }
+  await saveBoard(board)
+  await mount()
+  boardState().setTool('pen')
+  const hit = host.querySelector('[data-item-id="old"] .drawing-hit')!
+  await fire(hit, 'pointerdown', { pointerId: 5, pointerType: 'pen', x: 300, y: 300 })
+  await fire(window, 'pointermove', { pointerId: 5, pointerType: 'pen', x: 320, y: 310 })
+  await fire(window, 'pointerup', { pointerId: 5, pointerType: 'pen', x: 320, y: 310 })
+  expect(drawings()).toHaveLength(2)
+  expect(boardState().board.items.old.transform).toEqual(board.items.old.transform)
+})
+
+test('tablet mode ignores single fingers and touches that arrive while the pen is active, but still allows two-finger navigation', async () => {
+  await mount()
+  boardState().setTablet(true)
+  const surface = host.querySelector('.canvas-surface')!
+  const start = boardState().viewport
+
+  await fire(surface, 'pointerdown', { pointerId: 1, pointerType: 'touch', x: 200, y: 200 })
+  await fire(window, 'pointermove', { pointerId: 1, pointerType: 'touch', x: 260, y: 240 })
+  await fire(window, 'pointerup', { pointerId: 1, pointerType: 'touch', x: 260, y: 240 })
+  expect(boardState().viewport).toEqual(start)
+
+  await fire(surface, 'pointerdown', { pointerId: 2, pointerType: 'pen', x: 300, y: 300 })
+  await fire(window, 'pointerup', { pointerId: 2, pointerType: 'pen', x: 300, y: 300 })
+  await fire(surface, 'pointerdown', { pointerId: 3, pointerType: 'touch', x: 200, y: 200 })
+  await fire(surface, 'pointerdown', { pointerId: 4, pointerType: 'touch', x: 260, y: 200 })
+  await fire(window, 'pointermove', { pointerId: 4, pointerType: 'touch', x: 360, y: 200 })
+  expect(boardState().viewport.zoom).toBe(start.zoom) // palm guard: both contacts dropped right after the pen
+  await fire(window, 'pointerup', { pointerId: 3, pointerType: 'touch', x: 200, y: 200 })
+  await fire(window, 'pointerup', { pointerId: 4, pointerType: 'touch', x: 360, y: 200 })
+
+  await new Promise(resolve => setTimeout(resolve, 750))
+  await fire(surface, 'pointerdown', { pointerId: 5, pointerType: 'touch', x: 200, y: 200 })
+  await fire(surface, 'pointerdown', { pointerId: 6, pointerType: 'touch', x: 260, y: 200 })
+  await fire(window, 'pointermove', { pointerId: 6, pointerType: 'touch', x: 360, y: 200 })
+  expect(boardState().viewport.zoom).toBeGreaterThan(start.zoom)
+})

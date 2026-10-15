@@ -50,3 +50,13 @@
 .pen-panel button{min-width:30px;height:30px;padding:0 8px;background:transparent;border:0;border-radius:5px;color:#6e756f}.pen-panel button:hover{background:#f0f2ed}.pen-panel button.active{background:#e3eae5;color:#446b5d}
 .pen-panel label{display:flex;align-items:center;gap:5px}.pen-panel input[type=range]{width:78px}.pen-value{min-width:34px;text-align:center;font-variant-numeric:tabular-nums}
 @media(max-width:760px){.pen-panel{bottom:120px}}
+
+.drawing-hit{pointer-events:stroke}
+
+.top-actions button.active{background:#e3eae5;color:#446b5d}
+.app .topbar,.app .toolbar,.app .pen-panel,.app .history-controls,.app .view-controls,.app .board-hint{transition:opacity .15s}
+.app.writing .topbar,.app.writing .toolbar,.app.writing .pen-panel,.app.writing .history-controls,.app.writing .view-controls,.app.writing .board-hint,.app.writing .context-controls{opacity:.15;pointer-events:none}
+.app.tablet .toolbar button{width:46px;height:46px}.app.tablet .board-hint{display:none}
+.app.tablet .pen-panel button,.app.tablet .history-controls button,.app.tablet .view-controls button{min-width:40px;height:40px}
+.app.tablet .pen-panel{bottom:100px}
+.app.tablet .canvas-surface{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}

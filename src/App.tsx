@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, ChevronDown, CircleHelp, ClipboardPaste, Copy, Scissors, Group, Ungroup, Code2, Eraser, Focus, Frame, Hand, ImagePlus, Maximize2, MousePointer2, PenLine, Redo2, Sigma, Trash2, Type, Undo2, Waypoints } from 'lucide-react'
+import { Tablet, ArrowLeft, ArrowRight, ChevronDown, CircleHelp, ClipboardPaste, Copy, Scissors, Group, Ungroup, Code2, Eraser, Focus, Frame, Hand, ImagePlus, Maximize2, MousePointer2, PenLine, Redo2, Sigma, Trash2, Type, Undo2, Waypoints } from 'lucide-react'
 import { BoardRenderer } from './BoardRenderer'
 import { ContextMenu } from './ContextMenu'
 import type { MenuAction } from './ContextMenu'
@@ -42,6 +42,8 @@ const tools: { id: Tool; label: string; shortcut: string; icon: typeof MousePoin
   { id: 'edge', label: 'Frame edge', shortcut: 'L', icon: Waypoints },
 ]
 
+const PALM_GUARD_MS = 700
+const PALM_SIZE = 40
 const viewportEqual = (a: Viewport, b: Viewport) => Math.abs(a.x-b.x) < 1 && Math.abs(a.y-b.y) < 1 && Math.abs(a.zoom-b.zoom) < .001
 const alignmentReferences = (board: Board, excluded: Set<Id>) => [
   ...Object.values(board.items).filter(item => !excluded.has(item.id)).map(item => item.transform),
@@ -57,6 +59,9 @@ export default function App() {
   const multiSelection = useBoard(s => s.multiSelection)
   const editing = useBoard(s => s.editing)
   const pen = useBoard(s => s.pen)
+  const tablet = useBoard(s => s.tablet)
+  const [writing, setWriting] = useState(false)
+  const lastPenAt = useRef(0)
   const past = useBoard(s => s.past)
   const future = useBoard(s => s.future)
   const viewPast = useBoard(s => s.viewPast)
@@ -158,6 +163,19 @@ export default function App() {
   const onSurfacePointerDownCapture = (event: React.PointerEvent) => {
     if (event.button === 2) return
     setContextMenu(null)
+    if (event.pointerType === 'pen') {
+      lastPenAt.current = performance.now()
+      if (!boardState().tablet && !localStorage.getItem('trace.tabletPrompted')) {
+        try { localStorage.setItem('trace.tabletPrompted', '1') } catch { /* storage unavailable */ }
+        boardState().setTablet(true)
+        setNotice('检测到触笔，已开启平板模式：手指只用于双指平移缩放。可在右上角关闭。')
+      }
+    }
+    // Tablet mode: a resting palm must never act. Contacts that are large, or that arrive while the pen is in use or just left, are dropped.
+    if (event.pointerType === 'touch' && boardState().tablet) {
+      const native = event.nativeEvent
+      if (performance.now() - lastPenAt.current < PALM_GUARD_MS || Math.max(native.width, native.height) > PALM_SIZE) { event.preventDefault(); event.stopPropagation(); return }
+    }
     if (event.pointerType === 'touch' && gesture.current?.kind === 'draw') { event.preventDefault(); event.stopPropagation(); return }
     if (event.pointerType === 'pen' && (touches.current.size || pinch.current)) {
       touches.current.clear(); pinch.current = null
@@ -181,6 +199,7 @@ export default function App() {
         return
       }
       if (touches.current.size > 2 || pinch.current) { event.stopPropagation(); return }
+      if (boardState().tablet) { event.stopPropagation(); return }
       gesturePointer.current = event.pointerId
     }
     if (!pinch.current) gesturePointer.current = event.pointerId
@@ -413,6 +432,7 @@ export default function App() {
       // While drawing, points are relative to the first sample so each sample is an O(1) append; pen-up re-anchors them to the bounding box.
       const points: StrokePoint[] = [{ x: 0, y: 0, pressure, t: 0 }]
       state.change(b => { b.items[id] = { id, type: 'drawing', points, lineWidth, pen: style, transform: { x: w.x, y: w.y, width: 1, height: 1 } } })
+      setWriting(true)
       gesture.current = { kind: 'draw', id, pen, startTime: event.timeStamp, points, origin: { x: w.x, y: w.y }, minX: 0, minY: 0, maxX: 0, maxY: 0 }
     } else if (state.tool === 'image') { setImagePosition(w); fileInput.current?.click() }
     else if (state.tool === 'select') { gesture.current = { kind: 'marquee', x: p.x, y: p.y, currentX: p.x, currentY: p.y } }
@@ -422,6 +442,8 @@ export default function App() {
     event.stopPropagation()
     if (event.button !== 0) return
     if (pinch.current || (event.pointerType === 'touch' && touches.current.size > 1)) return
+    // Writing or framing over existing content starts a new stroke/frame instead of grabbing what is underneath.
+    if (kind !== 'edge' && ['pen', 'frame'].includes(boardState().tool) && boardState().editing !== id) { onBackgroundDown(event); return }
     gesturePointer.current = event.pointerId
     const state = boardState()
     if (space.current || state.tool === 'hand') { startPan(event); return }
@@ -456,6 +478,7 @@ export default function App() {
 
   useEffect(() => {
     const move = (event: PointerEvent) => {
+      if (event.pointerType === 'pen') lastPenAt.current = performance.now()
       if (event.pointerType === 'touch' && touches.current.has(event.pointerId)) {
         touches.current.set(event.pointerId, screenPoint(event))
         const zoom = pinch.current
@@ -529,14 +552,14 @@ export default function App() {
         if (added) state.replaceItem({ id: g.id, type: 'drawing', lineWidth, pen: style, points: g.points, transform: { x: g.origin.x, y: g.origin.y, width: Math.max(1, g.maxX), height: Math.max(1, g.maxY) } })
       } else if (g.kind === 'connect') setConnector({ from: g.from, x: w.x, y: w.y })
     }
-    const finishStroke = (g: Extract<Gesture, { kind: 'draw' }>) => boardState().updateGesture(board => {
+    const finishStroke = (g: Extract<Gesture, { kind: 'draw' }>) => { setWriting(false); boardState().updateGesture(board => {
       const item = board.items[g.id]
       if (item?.type === 'drawing') {
         item.points = g.points.map(v => ({ ...v, x: v.x - g.minX, y: v.y - g.minY }))
         item.transform = { x: g.origin.x + g.minX, y: g.origin.y + g.minY, width: Math.max(1, g.maxX - g.minX), height: Math.max(1, g.maxY - g.minY) }
       }
       reconcileFrames(board, [g.id])
-    })
+    }) }
     const up = (event: PointerEvent) => {
       if (event.pointerType === 'touch') {
         touches.current.delete(event.pointerId)
@@ -815,7 +838,7 @@ export default function App() {
   if (selection || ids.length) menuActions.push('separator', { label: frameId ? '删除 Frame 及内容' : '删除所选内容', icon: Trash2, shortcut: '⌫', danger: true, run: removeSelection })
 
   if (!ready) return <div className="loading">{saveState.startsWith('Could not') ? saveState : 'Opening board…'}</div>
-  return <div className={`app tool-${tool} ${panning ? 'is-panning' : ''}`}>
+  return <div className={`app tool-${tool} ${panning ? 'is-panning' : ''} ${tablet ? 'tablet' : ''} ${writing ? 'writing' : ''}`}>
     <div className="canvas-surface" ref={root} onPointerDownCapture={onSurfacePointerDownCapture} onPointerDown={onBackgroundDown} onContextMenu={openContextMenu} onAuxClick={e => { if (e.button === 1) e.preventDefault() }} onDrop={onDrop} onDragOver={e => e.preventDefault()}>
       <BoardRenderer board={board} viewport={viewport} mode="edit" selection={selection} multiSelection={multiSelection} editing={editing} onObjectDown={onObjectDown} onObjectDoubleClick={objectDoubleClick} onResizeDown={onResizeDown} onEdgeHandleDown={(event, id) => { if (event.button !== 0) return; gesturePointer.current = event.pointerId; gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }) }} onContentChange={contentChange} onTextHeightChange={(id, height) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'text' && height > item.transform.height) item.transform.height = height })} onCodeLanguageChange={(id, language) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'code') item.language = language })} onDoneEditing={finishEditing} />
       {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
@@ -826,7 +849,7 @@ export default function App() {
       {connector && <svg className="connector-preview"><line x1={(board.frames[connector.from]?.bounds.x || 0) * viewport.zoom + viewport.x} y1={((board.frames[connector.from]?.bounds.y || 0)-20) * viewport.zoom + viewport.y} x2={connector.x * viewport.zoom + viewport.x} y2={connector.y * viewport.zoom + viewport.y} /></svg>}
     </div>
 
-    <header className="topbar"><div className="board-identity"><span className="brand-mark">◌</span><div className="board-menu-anchor">{renamingBoard ? <InlineRename value={board.title} label="Board title" className="board-name-input" onCommit={title => { boardState().change(b => { b.title = title }); setBoardList(list => list.map(entry => entry.id === board.id ? { ...entry, title } : entry)) }} onClose={() => setRenamingBoard(false)} /> : <button onClick={() => setBoardMenu(value => !value)} className="board-name">{board.title}<ChevronDown size={13} /></button>}{boardMenu && <div className="board-menu"><div className="menu-caption">BOARDS</div>{boardList.map(entry => <div key={entry.id} className="board-menu-row"><button disabled={boardBusy} className={entry.id === board.id ? 'current' : ''} onClick={() => void openBoard(entry.id)}>{entry.title}</button><button disabled={boardBusy} className="board-delete" title={`Delete board: ${entry.title}`} aria-label={`Delete board: ${entry.title}`} onClick={() => void removeBoard(entry.id, entry.title)}><Trash2 size={14} /></button></div>)}<div className="menu-rule" /><button disabled={boardBusy} onClick={() => void newBoard()}>+ New blank board</button><button disabled={boardBusy} onClick={renameBoard}>Rename current board</button></div>}</div><span className="save-state">{saveState}</span></div><div className="top-actions"><button className={`story-toggle ${showStory ? 'active' : ''}`} onClick={() => setShowStory(value => !value)}>Story</button><button title="How to use" onClick={() => setShowHelp(true)}><CircleHelp size={17} /></button></div></header>
+    <header className="topbar"><div className="board-identity"><span className="brand-mark">◌</span><div className="board-menu-anchor">{renamingBoard ? <InlineRename value={board.title} label="Board title" className="board-name-input" onCommit={title => { boardState().change(b => { b.title = title }); setBoardList(list => list.map(entry => entry.id === board.id ? { ...entry, title } : entry)) }} onClose={() => setRenamingBoard(false)} /> : <button onClick={() => setBoardMenu(value => !value)} className="board-name">{board.title}<ChevronDown size={13} /></button>}{boardMenu && <div className="board-menu"><div className="menu-caption">BOARDS</div>{boardList.map(entry => <div key={entry.id} className="board-menu-row"><button disabled={boardBusy} className={entry.id === board.id ? 'current' : ''} onClick={() => void openBoard(entry.id)}>{entry.title}</button><button disabled={boardBusy} className="board-delete" title={`Delete board: ${entry.title}`} aria-label={`Delete board: ${entry.title}`} onClick={() => void removeBoard(entry.id, entry.title)}><Trash2 size={14} /></button></div>)}<div className="menu-rule" /><button disabled={boardBusy} onClick={() => void newBoard()}>+ New blank board</button><button disabled={boardBusy} onClick={renameBoard}>Rename current board</button></div>}</div><span className="save-state">{saveState}</span></div><div className="top-actions"><button className={tablet ? 'active' : ''} title={tablet ? 'Tablet mode on — fingers only pan and zoom with two fingers' : 'Tablet mode'} aria-label="Tablet mode" aria-pressed={tablet} onClick={() => boardState().setTablet(!tablet)}><Tablet size={17} /></button><button className={`story-toggle ${showStory ? 'active' : ''}`} onClick={() => setShowStory(value => !value)}>Story</button><button title="How to use" onClick={() => setShowHelp(true)}><CircleHelp size={17} /></button></div></header>
     {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} actions={menuActions} onClose={() => setContextMenu(null)} />}
     {notice && <div className="canvas-notice" role="status">{notice}</div>}
     <div className="toolbar" role="toolbar" aria-label="Board tools">{tools.map((entry, index) => <div key={entry.id} className={index === 2 || index === 8 ? 'tool-divider' : ''}><button title={`${entry.label} · ${entry.shortcut}`} aria-label={entry.label} className={tool === entry.id ? 'active' : ''} onClick={() => { boardState().setTool(entry.id); if (entry.id === 'image') fileInput.current?.click() }}><entry.icon size={19} strokeWidth={1.75} /></button></div>)}</div>
@@ -852,6 +875,6 @@ export default function App() {
     <input ref={fileInput} className="file-input" type="file" accept="image/*" onChange={e => { const file = e.target.files?.[0]; if (file) void addImage(file, imagePosition || undefined); e.target.value = ''; setImagePosition(null) }} />
     {showStory && <StoryPanel key={board.id} board={board} viewport={viewport} activeStoryId={activeStoryId} onStoryChange={setActiveStoryId} onPresent={setPresentingStoryId} onClose={() => setShowStory(false)} onFocusFrame={(id, bounds) => focus(bounds || board.frames[id]?.bounds || null)} />}
     {presentingStoryId && board.stories[presentingStoryId]?.steps.length ? <Suspense fallback={<div className="loading presentation-loading">Opening story…</div>}><Presentation board={board} story={board.stories[presentingStoryId]} onClose={() => { setPresentingStoryId(null); if (document.fullscreenElement) void document.exitFullscreen() }} /></Suspense> : null}
-    {showHelp && <div className="modal-backdrop" onPointerDown={e => e.stopPropagation()}><div className="help-modal"><button className="modal-close" onClick={() => setShowHelp(false)}>×</button><span className="eyebrow">TRACE</span><h2>Think on the board.</h2><p>Place notes, code, images, formulas, and sketches anywhere. Draw a frame when a local idea has a name. Frames keep their contents together; moving a frame moves its content. Group blocks to select and move them as one.</p><div className="help-grid"><span>Select several</span><span>Drag an empty part of the board, or Shift + click</span><span>Group / Ungroup</span><span>⌘/Ctrl G · ⌘/Ctrl Shift G (one nesting level at a time)</span><span>Copy / Cut / Paste</span><span>⌘/Ctrl C · X · V, or right-click the canvas</span><span>Select in a group</span><span>⌘/Ctrl + click selects one member; double-click to edit</span><span>Move around</span><span>Middle button or Space + drag; one finger on empty space; trackpad scroll</span><span>Align objects</span><span>Drag near another edge or center; hold Alt to skip snapping</span><span>Zoom</span><span>Two finger pinch, mouse wheel, or zoom controls</span><span>Edit content</span><span>Double-click or double-tap; tap elsewhere to finish</span><span>Inline formula</span><span>Type $...$ in a Markdown note to render inline math</span><span>Code block</span><span>Press C, click the board, then choose a language</span><span>Formula source</span><span>Type LaTeX inside the selected formula box</span><span>Connect frames</span><span>Drag ↗ beside a frame title</span><span>Present</span><span>Open Story, build a path, then Present</span><span>Undo / Redo</span><span>⌘/Ctrl Z · ⌘/Ctrl Shift Z</span></div><button className="done-button" onClick={() => setShowHelp(false)}>Return to board</button></div></div>}
+    {showHelp && <div className="modal-backdrop" onPointerDown={e => e.stopPropagation()}><div className="help-modal"><button className="modal-close" onClick={() => setShowHelp(false)}>×</button><span className="eyebrow">TRACE</span><h2>Think on the board.</h2><p>Place notes, code, images, formulas, and sketches anywhere. Draw a frame when a local idea has a name. Frames keep their contents together; moving a frame moves its content. Group blocks to select and move them as one.</p><div className="help-grid"><span>Select several</span><span>Drag an empty part of the board, or Shift + click</span><span>Group / Ungroup</span><span>⌘/Ctrl G · ⌘/Ctrl Shift G (one nesting level at a time)</span><span>Copy / Cut / Paste</span><span>⌘/Ctrl C · X · V, or right-click the canvas</span><span>Select in a group</span><span>⌘/Ctrl + click selects one member; double-click to edit</span><span>Move around</span><span>Middle button or Space + drag; one finger on empty space; trackpad scroll</span><span>Align objects</span><span>Drag near another edge or center; hold Alt to skip snapping</span><span>Tablet mode</span><span>Top-right tablet button: the pen does everything, fingers only pan and zoom with two fingers, and palm contacts are ignored</span><span>Zoom</span><span>Two finger pinch, mouse wheel, or zoom controls</span><span>Edit content</span><span>Double-click or double-tap; tap elsewhere to finish</span><span>Inline formula</span><span>Type $...$ in a Markdown note to render inline math</span><span>Code block</span><span>Press C, click the board, then choose a language</span><span>Formula source</span><span>Type LaTeX inside the selected formula box</span><span>Connect frames</span><span>Drag ↗ beside a frame title</span><span>Present</span><span>Open Story, build a path, then Present</span><span>Undo / Redo</span><span>⌘/Ctrl Z · ⌘/Ctrl Shift Z</span></div><button className="done-button" onClick={() => setShowHelp(false)}>Return to board</button></div></div>}
   </div>
 }
