@@ -212,7 +212,7 @@ test('a frame drag carries contents once; frame resize does not scale those cont
   expect(boardState().board.items.a.transform.x).toBe(120)
   expect(boardState().board.items.b.transform.x).toBe(260)
   const item = structuredClone(boardState().board.items.a)
-  await pointer(host.querySelector('.resize-handle')!, 'pointerdown')
+  await pointer(host.querySelector('.frame-handle.handle-se')!, 'pointerdown')
   await pointer(window, 'pointermove', { clientX: 300, clientY: 300, altKey: true }); await pointer(window, 'pointerup')
   expect(boardState().board.items.a).toEqual(item)
   expect(boardState().board.frames.f.bounds.width).toBe(520)
@@ -378,4 +378,37 @@ test('pen eraser end and barrel button switch tools for that stroke only', async
   await fire(window, 'pointerup', { pointerId: 2, pointerType: 'pen', x: 150, y: 110, button: 5 })
   expect(drawings()).toHaveLength(0)
   expect(boardState().tool).toBe('pen')
+})
+
+test('a selected frame resizes from any edge or corner, keeping the opposite side fixed', async () => {
+  await mount(); await seedObjects()
+  await act(async () => boardState().setSelection({ kind: 'frame', id: 'f' }))
+  expect(host.querySelectorAll('.frame-handle')).toHaveLength(8)
+  expect(host.querySelector('.selection-box')).toBeNull() // the frame's own outline is the selection
+  await pointer(host.querySelector('.frame-handle.handle-w')!, 'pointerdown', { clientX: 100, clientY: 100 })
+  await pointer(window, 'pointermove', { clientX: 70, clientY: 100 }); await pointer(window, 'pointerup')
+  expect(boardState().board.frames.f.bounds).toMatchObject({ x: -30, y: 0, width: 350, height: 200 })
+  await pointer(host.querySelector('.frame-handle.handle-nw')!, 'pointerdown', { clientX: 100, clientY: 100 })
+  await pointer(window, 'pointermove', { clientX: 120, clientY: 130 }); await pointer(window, 'pointerup')
+  expect(boardState().board.frames.f.bounds).toMatchObject({ x: -10, y: 30, width: 330, height: 170 })
+})
+
+test('connection points replace the arrow beside the title: drag one onto another frame to connect', async () => {
+  await mount(); await seedObjects()
+  await act(async () => boardState().change(board => { board.frames.g = { id: 'g', title: 'other', bounds: { x: 600, y: 0, width: 300, height: 200 } } }))
+  expect(host.querySelector('.frame-connector')).toBeNull()
+  expect(host.querySelector('.frame-dot')).toBeNull() // hidden until a frame is hovered, selected, or the Edge tool is active
+  await act(async () => boardState().setSelection({ kind: 'frame', id: 'f' }))
+  expect(host.querySelectorAll('.frame-dot')).toHaveLength(4)
+  await pointer(host.querySelector('.frame-dot[aria-label="Connect from e"]')!, 'pointerdown', { clientX: 320, clientY: 100 })
+  await pointer(window, 'pointermove', { clientX: 700, clientY: 100 }); await pointer(window, 'pointerup', { clientX: 700, clientY: 100 })
+  const edges = Object.values(boardState().board.frameEdges)
+  expect(edges).toHaveLength(1)
+  expect(edges[0]).toMatchObject({ from: 'f', to: 'g' })
+})
+
+test('the Edge tool shows every frame\'s connection points', async () => {
+  await mount(); await seedObjects()
+  await act(async () => boardState().setTool('edge'))
+  expect(host.querySelectorAll('.frame-dot')).toHaveLength(4)
 })
