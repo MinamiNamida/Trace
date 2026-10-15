@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import katex from 'katex'
 import getStroke from 'perfect-freehand'
 import { CodeBlock } from './CodeBlock'
@@ -22,6 +22,13 @@ function computeStrokePath(item: DrawingItem) {
   const points = outline.map(p => [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100])
   return `M ${points[0][0]} ${points[0][1]} ${points.slice(1).map(p => `L ${p[0]} ${p[1]}`).join(' ')} Z`
 }
+
+// Re-renders only when its own item object (or visibility) changes, so a stroke being drawn does not repaint the others.
+const StrokeShape = memo(function StrokeShape({ item, hidden, onDown }: { item: DrawingItem; hidden: boolean; onDown?: (event: React.PointerEvent, id: Id) => void }) {
+  return <g data-item-id={item.id} transform={`translate(${item.transform.x} ${item.transform.y})`} style={hidden ? { visibility: 'hidden' } : undefined} onPointerDown={onDown ? e => onDown(e, item.id) : undefined}>
+    <path d={strokePath(item)} fill="#333431" opacity=".88" /><rect width={item.transform.width} height={item.transform.height} fill="transparent" className="drawing-hit" />
+  </g>
+})
 
 function ImageContent({ assetId, alt, assetUrl }: { assetId: Id; alt?: string; assetUrl?: string }) {
   const [url, setUrl] = useState('')
@@ -89,6 +96,9 @@ const rectStyle = (t: Transform): React.CSSProperties => ({ left: t.x, top: t.y,
 
 export function BoardRenderer({ board, viewport, mode, visibleItems, hiddenItems, assetUrls, selection, multiSelection = [], editing, onObjectDown, onObjectDoubleClick, onResizeDown, onEdgeHandleDown, onContentChange, onTextHeightChange, onCodeLanguageChange, onDoneEditing }: Props) {
   const editable = mode === 'edit'
+  const downRef = useRef(onObjectDown)
+  downRef.current = onObjectDown
+  const onStrokeDown = useCallback((event: React.PointerEvent, id: Id) => downRef.current?.(event, 'item', id), [])
   const detail = viewport.zoom < .33 ? 'far' : viewport.zoom < .72 ? 'mid' : 'near'
   const frames = Object.values(board.frames)
   const items = Object.values(board.items).filter(item => !visibleItems || visibleItems.includes(item.id))
@@ -105,9 +115,7 @@ export function BoardRenderer({ board, viewport, mode, visibleItems, hiddenItems
           : `M ${p.x1} ${p.y1} C ${(p.x1 + p.x2) / 2} ${p.y1}, ${(p.x1 + p.x2) / 2} ${p.y2}, ${p.x2} ${p.y2}`
         return <g key={edge.id} data-edge-id={edge.id} className={`frame-edge ${selection?.id === edge.id ? 'selected' : ''}`}><path d={d} markerEnd="url(#edge-arrow)" /><path className="edge-hit" d={d} onPointerDown={editable ? e => onObjectDown?.(e, 'edge', edge.id) : undefined} /></g>
       })}</g>
-      <g className="drawing-layer">{items.filter((i): i is DrawingItem => i.type === 'drawing').map(item => <g key={item.id} data-item-id={item.id} transform={`translate(${item.transform.x} ${item.transform.y})`} style={hidden.has(item.id) ? { visibility: 'hidden' } : undefined} onPointerDown={editable ? e => onObjectDown?.(e, 'item', item.id) : undefined}>
-        <path d={strokePath(item)} fill="#333431" opacity=".88" /><rect width={item.transform.width} height={item.transform.height} fill="transparent" className="drawing-hit" />
-      </g>)}</g>
+      <g className="drawing-layer">{items.filter((i): i is DrawingItem => i.type === 'drawing').map(item => <StrokeShape key={item.id} item={item} hidden={hidden.has(item.id)} onDown={editable ? onStrokeDown : undefined} />)}</g>
       <g className="frame-layer">{frames.map(frame => <rect key={frame.id} data-frame-id={frame.id} className={`frame-outline ${(selection?.kind === 'frame' && selection.id === frame.id) || multiSelection.includes(frame.id) ? 'selected' : ''}`} x={frame.bounds.x} y={frame.bounds.y} width={frame.bounds.width} height={frame.bounds.height} onPointerDown={editable ? e => onObjectDown?.(e, 'frame', frame.id) : undefined} />)}</g>
     </svg>
     <div className="world-dom">

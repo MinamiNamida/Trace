@@ -1,3 +1,4 @@
+import { current, isDraft } from 'immer'
 import { ArrowLeft, ArrowRight, Copy, Download, Ellipsis, FileText, Play, Printer, Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -126,7 +127,7 @@ export function StoryPanel({ board, viewport, activeStoryId, onStoryChange, onPr
   const duplicateStory = () => {
     if (!story) return
     const id = uid()
-    boardState().change(board => { board.stories[id] = { id, title: `${story.title} copy`, steps: story.steps.map(step => ({ ...structuredClone(step), id: uid() })) } })
+    boardState().change(board => { board.stories[id] = { id, title: `${story.title} copy`, steps: story.steps.map(step => ({ ...structuredClone(isDraft(step) ? current(step) : step), id: uid() })) } })
     onStoryChange(id)
     setStoryMenu(false)
     setActiveStepId(null)

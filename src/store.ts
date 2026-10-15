@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { produce, setAutoFreeze } from 'immer'
 import type { Board, CanvasItem, Selection, Tool, Viewport } from './model'
 import { PEN_PRESETS, type PenSettings } from './ink'
 import { boundsFor, expandGroups, reconcileFrames, selectedIds } from './boardOperations'
@@ -35,7 +36,10 @@ type State = {
 }
 
 const emptyBoard: Board = { id: 'main', version: 2, title: 'Untitled board', items: {}, frames: {}, frameEdges: {}, stories: {} }
+setAutoFreeze(false)
 const clone = (board: Board) => structuredClone(board)
+// Structural sharing: untouched items keep their identity, which incremental saves and memoised rendering rely on.
+const edit = (board: Board, update: (board: Board) => void) => produce(board, update)
 const restoredSelection = (board: Board, state: State): Pick<State, 'selection' | 'multiSelection'> => {
   if (state.selection?.kind === 'edge') return { selection: board.frameEdges[state.selection.id] ? state.selection : null, multiSelection: [] }
   const ids = expandGroups(board, selectedIds(state.selection, state.multiSelection).filter(id => !!boundsFor(board, id)))
@@ -66,16 +70,15 @@ export const useBoard = create<State>((set) => ({
     set({ board, past: [], future: [], viewPast: [], viewFuture: [], selection: null, multiSelection: [], editing: null })
   },
   change: update => set(state => {
-    const board = clone(state.board); update(board)
+    const board = edit(state.board, update)
     return { board, past: [...state.past.slice(-79), state.board], future: [] }
   }),
   beginGesture: () => set(state => ({ past: [...state.past.slice(-79), state.board], future: [] })),
-  updateGesture: update => set(state => { const board = clone(state.board); update(board); return { board } }),
+  updateGesture: update => set(state => ({ board: edit(state.board, update) })),
   // Shares every other item with the previous board instead of cloning it; undo snapshots stay untouched.
   replaceItem: item => set(state => state.board.items[item.id] ? { board: { ...state.board, items: { ...state.board.items, [item.id]: item } } } : state),
   discardNewItem: id => set(state => {
-    const board = clone(state.board)
-    delete board.items[id]
+    const board = edit(state.board, b => { delete b.items[id] })
     const last = state.past.at(-1)
     return { board, selection: null, multiSelection: [], editing: null, past: last && !last.items[id] ? state.past.slice(0, -1) : state.past }
   }),

@@ -25,7 +25,7 @@ type Gesture =
   | { kind: 'createEdit'; id: Id }
   | { kind: 'moveMulti'; x: number; y: number; originals: Record<Id, Transform>; started: boolean; primary: { kind: 'item' | 'frame'; id: Id } }
   | { kind: 'resize'; target: Exclude<Selection, null>; x: number; y: number; original: Transform; originalPoints?: { x: number; y: number; pressure?: number }[]; started: boolean }
-  | { kind: 'draw'; id: Id; points: StrokePoint[]; pen: PenSettings; startTime: number; minX: number; minY: number; maxX: number; maxY: number }
+  | { kind: 'draw'; id: Id; points: StrokePoint[]; pen: PenSettings; startTime: number; origin: { x: number; y: number }; minX: number; minY: number; maxX: number; maxY: number }
   | { kind: 'frame'; id: Id; x: number; y: number }
   | { kind: 'connect'; from: Id }
 
@@ -410,9 +410,10 @@ export default function App() {
       const pen = state.pen
       const { width: lineWidth, ...style } = pen
       const pressure = style.pressure ? realPressure(event.nativeEvent) : undefined
-      const points: StrokePoint[] = [{ x: w.x, y: w.y, pressure, t: 0 }]
-      state.change(b => { b.items[id] = { id, type: 'drawing', points: [{ x: 0, y: 0, pressure, t: 0 }], lineWidth, pen: style, transform: { x: w.x, y: w.y, width: 1, height: 1 } } })
-      gesture.current = { kind: 'draw', id, pen, startTime: event.timeStamp, points, minX: w.x, minY: w.y, maxX: w.x, maxY: w.y }
+      // While drawing, points are relative to the first sample so each sample is an O(1) append; pen-up re-anchors them to the bounding box.
+      const points: StrokePoint[] = [{ x: 0, y: 0, pressure, t: 0 }]
+      state.change(b => { b.items[id] = { id, type: 'drawing', points, lineWidth, pen: style, transform: { x: w.x, y: w.y, width: 1, height: 1 } } })
+      gesture.current = { kind: 'draw', id, pen, startTime: event.timeStamp, points, origin: { x: w.x, y: w.y }, minX: 0, minY: 0, maxX: 0, maxY: 0 }
     } else if (state.tool === 'image') { setImagePosition(w); fileInput.current?.click() }
     else if (state.tool === 'select') { gesture.current = { kind: 'marquee', x: p.x, y: p.y, currentX: p.x, currentY: p.y } }
   }
@@ -519,15 +520,23 @@ export default function App() {
         const { width: lineWidth, ...style } = g.pen
         let added = false
         for (const sample of samplesOf(event)) {
-          const sw = worldPoint(sample), t = Math.round(sample.timeStamp - g.startTime)
-          if (!acceptSample(g.points.at(-1), sw.x, sw.y, t)) continue
-          g.points.push({ x: sw.x, y: sw.y, pressure: style.pressure ? realPressure(sample) : undefined, t })
-          g.minX = Math.min(g.minX, sw.x); g.minY = Math.min(g.minY, sw.y); g.maxX = Math.max(g.maxX, sw.x); g.maxY = Math.max(g.maxY, sw.y)
+          const sw = worldPoint(sample), x = sw.x - g.origin.x, y = sw.y - g.origin.y, t = Math.round(sample.timeStamp - g.startTime)
+          if (!acceptSample(g.points.at(-1), x, y, t)) continue
+          g.points.push({ x, y, pressure: style.pressure ? realPressure(sample) : undefined, t })
+          g.minX = Math.min(g.minX, x); g.minY = Math.min(g.minY, y); g.maxX = Math.max(g.maxX, x); g.maxY = Math.max(g.maxY, y)
           added = true
         }
-        if (added) state.replaceItem({ id: g.id, type: 'drawing', lineWidth, pen: style, points: g.points.map(v => ({ ...v, x: v.x-g.minX, y: v.y-g.minY })), transform: { x: g.minX, y: g.minY, width: Math.max(1,g.maxX-g.minX), height: Math.max(1,g.maxY-g.minY) } })
+        if (added) state.replaceItem({ id: g.id, type: 'drawing', lineWidth, pen: style, points: g.points, transform: { x: g.origin.x, y: g.origin.y, width: Math.max(1, g.maxX), height: Math.max(1, g.maxY) } })
       } else if (g.kind === 'connect') setConnector({ from: g.from, x: w.x, y: w.y })
     }
+    const finishStroke = (g: Extract<Gesture, { kind: 'draw' }>) => boardState().updateGesture(board => {
+      const item = board.items[g.id]
+      if (item?.type === 'drawing') {
+        item.points = g.points.map(v => ({ ...v, x: v.x - g.minX, y: v.y - g.minY }))
+        item.transform = { x: g.origin.x + g.minX, y: g.origin.y + g.minY, width: Math.max(1, g.maxX - g.minX), height: Math.max(1, g.maxY - g.minY) }
+      }
+      reconcileFrames(board, [g.id])
+    })
     const up = (event: PointerEvent) => {
       if (event.pointerType === 'touch') {
         touches.current.delete(event.pointerId)
@@ -554,7 +563,7 @@ export default function App() {
       if (g.kind === 'createEdit') { state.updateGesture(board => reconcileFrames(board, [g.id])); state.setEditing(g.id) }
       if (g.kind === 'moveMulti' && g.started) state.updateGesture(board => reconcileFrames(board, Object.keys(g.originals).filter(id => !board.items[id]?.frameId || !g.originals[board.items[id].frameId!])) )
       if (g.kind === 'resize' && g.started) state.updateGesture(board => { if (g.target.kind === 'frame') reconcileFrame(board, g.target.id); else reconcileFrames(board, [g.target.id]) })
-      if (g.kind === 'draw') state.updateGesture(board => reconcileFrames(board, [g.id]))
+      if (g.kind === 'draw') finishStroke(g)
       if (g.kind === 'marquee') {
         const a = screenToWorld(Math.min(g.x, g.currentX), Math.min(g.y, g.currentY), state.viewport)
         const b = screenToWorld(Math.max(g.x, g.currentX), Math.max(g.y, g.currentY), state.viewport)
@@ -576,7 +585,9 @@ export default function App() {
       gesture.current = null
       gesturePointer.current = null
     }
-    const cancelAll = () => { gesture.current = null; gesturePointer.current = null; touches.current.clear(); pinch.current = null; setPanning(false); setSnapGuides([]); setMarquee(null); setConnector(null) }
+    const cancelAll = () => {
+      if (gesture.current?.kind === 'draw') finishStroke(gesture.current)
+      gesture.current = null; gesturePointer.current = null; touches.current.clear(); pinch.current = null; setPanning(false); setSnapGuides([]); setMarquee(null); setConnector(null) }
     const cancel = (event: PointerEvent) => {
       if (event.pointerType === 'touch') {
         touches.current.delete(event.pointerId)
@@ -584,7 +595,6 @@ export default function App() {
         if (gesture.current?.kind === 'draw') return
       }
       if (gesture.current && event.pointerId !== gesturePointer.current) return
-      if (gesture.current?.kind === 'draw') boardState().updateGesture(board => reconcileFrames(board, [(gesture.current as { id: Id }).id]))
       cancelAll()
     }
     const lostCapture = (event: PointerEvent) => { if (gesture.current && event.pointerId === gesturePointer.current && gesture.current.kind === 'pan') up(event) }

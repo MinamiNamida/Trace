@@ -1,5 +1,8 @@
 import { uid, unionBounds } from './model'
 import type { Board, CanvasItem, Frame, FrameEdge, Id, Selection, Transform } from './model'
+import { current, isDraft } from 'immer'
+// Board edits run on immer drafts, which structuredClone cannot copy.
+const plain = <T,>(value: T): T => isDraft(value) ? current(value as never) as T : value
 
 export const objectFor = (board: Board, id: Id) => board.items[id] || board.frames[id]
 export const boundsFor = (board: Board, id: Id): Transform | undefined => board.items[id]?.transform || board.frames[id]?.bounds
@@ -98,7 +101,7 @@ export function removeObjects(board: Board, ids: Id[], includeContents = true) {
 export type BoardClip = { kind: 'trace/selection'; version: 1; items: CanvasItem[]; frames: Frame[]; edges: FrameEdge[]; assets?: Record<Id, string> }
 export function createClip(board: Board, ids: Id[], edgeId?: Id): BoardClip {
   const all = new Set(withFrameChildren(board, ids))
-  return structuredClone({ kind: 'trace/selection', version: 1, items: Object.values(board.items).filter(item => all.has(item.id)), frames: Object.values(board.frames).filter(frame => all.has(frame.id)), edges: Object.values(board.frameEdges).filter(edge => edge.id === edgeId || (all.has(edge.from) && all.has(edge.to))) })
+  return structuredClone({ kind: 'trace/selection', version: 1, items: Object.values(board.items).filter(item => all.has(item.id)).map(plain), frames: Object.values(board.frames).filter(frame => all.has(frame.id)).map(plain), edges: Object.values(board.frameEdges).filter(edge => edge.id === edgeId || (all.has(edge.from) && all.has(edge.to))).map(plain) })
 }
 export function insertClip(board: Board, clip: BoardClip, at?: { x: number; y: number }) {
   const objects = [...clip.items, ...clip.frames]
@@ -110,7 +113,7 @@ export function insertClip(board: Board, clip: BoardClip, at?: { x: number; y: n
   for (const object of objects) for (const group of object.groupIds || []) counts.set(group, (counts.get(group) || 0) + 1)
   const dx = at ? at.x - bounds.x : 26, dy = at ? at.y - bounds.y : 26
   for (const original of objects) {
-    const object = structuredClone(original)
+    const object = structuredClone(plain(original))
     object.id = ids.get(original.id)!
     object.groupIds = object.groupIds?.filter(group => (counts.get(group) || 0) > 1).map(group => { if (!groups.has(group)) groups.set(group, uid()); return groups.get(group)! })
     if (!object.groupIds?.length) delete object.groupIds

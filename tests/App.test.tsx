@@ -1,9 +1,8 @@
 import { act, StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import { openDB } from 'idb'
 import App from '../src/App'
-import { listBoards, loadBoard, saveBoard } from '../src/storage'
+import { clearStorage, listBoards, loadBoard, saveBoard } from '../src/storage'
 import { boardState } from '../src/store'
 import { blank } from './fixtures'
 import type { Board } from '../src/model'
@@ -17,8 +16,7 @@ const button = (name: string) => Array.from(host.querySelectorAll('button')).fin
 const click = async (target: HTMLElement) => { expect(target).toBeDefined(); await act(async () => target.click()); await settle() }
 
 beforeEach(async () => {
-  const db = await openDB('spatial-learning-board', 1)
-  await db.clear('boards'); await db.clear('assets'); db.close()
+  await clearStorage()
   localStorage.clear()
   window.history.replaceState(null, '', '/?board=first')
   boardState().setBoard(blank('initial'))
@@ -92,8 +90,7 @@ test('cancel leaves boards intact; deleting an inactive board preserves current 
 
 
 test('a new browser opens the editable guide without depending on a downloaded demo image', async () => {
-  const db = await openDB('spatial-learning-board', 1)
-  await db.clear('boards'); db.close()
+  await clearStorage()
   window.history.replaceState(null, '', '/')
   const fetch = vi.spyOn(window, 'fetch').mockRejectedValue(new Error('offline'))
   await act(async () => root.render(<StrictMode><App /></StrictMode>))
