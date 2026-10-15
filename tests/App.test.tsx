@@ -265,3 +265,33 @@ test('native text paste creates Markdown while clipboard shortcuts leave form in
   expect(cut.defaultPrevented).toBe(false)
   expect(Object.values(boardState().board.items)).toHaveLength(1)
 })
+
+function fire(target: Element | Window, type: string, init: { pointerId: number; pointerType: string; x: number; y: number }) {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: init.x, clientY: init.y, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
+  Object.assign(event, { pointerId: init.pointerId, pointerType: init.pointerType, pressure: .5 })
+  return act(async () => { target.dispatchEvent(event) })
+}
+const drawings = () => Object.values(boardState().board.items).filter(item => item.type === 'drawing')
+
+test('pen draws, finger with the pen tool pans instead, and a finger cannot interrupt a pen stroke', async () => {
+  await mount()
+  boardState().setTool('pen')
+  const surface = host.querySelector('.canvas-surface')!
+  const before = boardState().viewport
+
+  await fire(surface, 'pointerdown', { pointerId: 1, pointerType: 'touch', x: 200, y: 200 })
+  await fire(window, 'pointermove', { pointerId: 1, pointerType: 'touch', x: 260, y: 240 })
+  await fire(window, 'pointerup', { pointerId: 1, pointerType: 'touch', x: 260, y: 240 })
+  expect(drawings()).toHaveLength(0)
+  expect(boardState().viewport.x).toBe(before.x + 60)
+
+  await fire(surface, 'pointerdown', { pointerId: 2, pointerType: 'pen', x: 300, y: 300 })
+  await fire(surface, 'pointerdown', { pointerId: 3, pointerType: 'touch', x: 500, y: 500 })
+  await fire(window, 'pointermove', { pointerId: 3, pointerType: 'touch', x: 520, y: 520 })
+  await fire(window, 'pointermove', { pointerId: 2, pointerType: 'pen', x: 330, y: 320 })
+  await fire(window, 'pointerup', { pointerId: 3, pointerType: 'touch', x: 520, y: 520 })
+  await fire(window, 'pointermove', { pointerId: 2, pointerType: 'pen', x: 360, y: 340 })
+  await fire(window, 'pointerup', { pointerId: 2, pointerType: 'pen', x: 360, y: 340 })
+  expect(drawings()).toHaveLength(1)
+  expect((drawings()[0] as { points: unknown[] }).points).toHaveLength(3)
+})

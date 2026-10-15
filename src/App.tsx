@@ -155,6 +155,11 @@ export default function App() {
   const onSurfacePointerDownCapture = (event: React.PointerEvent) => {
     if (event.button === 2) return
     setContextMenu(null)
+    if (event.pointerType === 'touch' && gesture.current?.kind === 'draw') { event.preventDefault(); event.stopPropagation(); return }
+    if (event.pointerType === 'pen' && (touches.current.size || pinch.current)) {
+      touches.current.clear(); pinch.current = null
+      if (gesture.current?.kind === 'pan') { gesture.current = null; gesturePointer.current = null; setPanning(false) }
+    }
     if (event.pointerType === 'touch' && !(event.target as Element).closest('.canvas-item.editing, .frame-title:has(input)')) {
       touches.current.set(event.pointerId, screenPoint(event))
       if (touches.current.size === 2) {
@@ -383,7 +388,7 @@ export default function App() {
     const state = boardState()
     const p = screenPoint(event)
     const w = worldPoint(event)
-    if (space.current || state.tool === 'hand' || (event.pointerType === 'touch' && state.tool === 'select')) { startPan(event); return }
+    if (space.current || state.tool === 'hand' || (event.pointerType === 'touch' && ['select', 'pen', 'eraser', 'frame', 'edge'].includes(state.tool))) { startPan(event); return }
     state.setSelection(null)
     if (state.tool === 'text' || state.tool === 'formula' || state.tool === 'code') {
       const id = uid()
@@ -558,12 +563,24 @@ export default function App() {
       gesture.current = null
       gesturePointer.current = null
     }
-    const cancel = () => { gesture.current = null; gesturePointer.current = null; touches.current.clear(); pinch.current = null; setPanning(false); setSnapGuides([]); setMarquee(null); setConnector(null) }
+    const cancelAll = () => { gesture.current = null; gesturePointer.current = null; touches.current.clear(); pinch.current = null; setPanning(false); setSnapGuides([]); setMarquee(null); setConnector(null) }
+    const cancel = (event: PointerEvent) => {
+      if (event.pointerType === 'touch') {
+        touches.current.delete(event.pointerId)
+        if (pinch.current?.ids.includes(event.pointerId)) pinch.current = null
+        if (gesture.current?.kind === 'draw') return
+      }
+      if (gesture.current && event.pointerId !== gesturePointer.current) return
+      if (gesture.current?.kind === 'draw') boardState().updateGesture(board => reconcileFrames(board, [(gesture.current as { id: Id }).id]))
+      cancelAll()
+    }
+    const lostCapture = (event: PointerEvent) => { if (gesture.current && event.pointerId === gesturePointer.current && gesture.current.kind === 'pan') up(event) }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
     window.addEventListener('pointercancel', cancel)
-    window.addEventListener('blur', cancel)
-    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', cancel); window.removeEventListener('blur', cancel) }
+    window.addEventListener('lostpointercapture', lostCapture)
+    window.addEventListener('blur', cancelAll)
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', cancel); window.removeEventListener('lostpointercapture', lostCapture); window.removeEventListener('blur', cancelAll) }
   }, [])
 
   const wheelActive = useRef(false)
