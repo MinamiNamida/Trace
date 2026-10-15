@@ -7,7 +7,15 @@ import { selectionBounds } from './boardOperations'
 import type { Board, CanvasItem, DrawingItem, Frame, Id, Selection, Transform, Viewport } from './model'
 import { loadAsset } from './storage'
 
+const pathCache = new WeakMap<DrawingItem, string>()
 export function strokePath(item: DrawingItem) {
+  const cached = pathCache.get(item)
+  if (cached !== undefined) return cached
+  const path = computeStrokePath(item)
+  pathCache.set(item, path)
+  return path
+}
+function computeStrokePath(item: DrawingItem) {
   const outline = getStroke(item.points.map(p => [p.x, p.y, p.pressure ?? .5]), { size: item.lineWidth, thinning: .22, smoothing: .65, streamline: .42, simulatePressure: true })
   if (!outline.length) return ''
   const points = outline.map(p => [Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10])

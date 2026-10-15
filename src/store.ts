@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Board, Selection, Tool, Viewport } from './model'
+import type { Board, CanvasItem, Selection, Tool, Viewport } from './model'
 import { boundsFor, expandGroups, reconcileFrames, selectedIds } from './boardOperations'
 
 type State = {
@@ -17,6 +17,7 @@ type State = {
   change: (update: (board: Board) => void) => void
   beginGesture: () => void
   updateGesture: (update: (board: Board) => void) => void
+  replaceItem: (item: CanvasItem) => void
   undo: () => void
   redo: () => void
   setTool: (tool: Tool) => void
@@ -54,6 +55,8 @@ export const useBoard = create<State>((set) => ({
   }),
   beginGesture: () => set(state => ({ past: [...state.past.slice(-79), state.board], future: [] })),
   updateGesture: update => set(state => { const board = clone(state.board); update(board); return { board } }),
+  // Shares every other item with the previous board instead of cloning it; undo snapshots stay untouched.
+  replaceItem: item => set(state => state.board.items[item.id] ? { board: { ...state.board, items: { ...state.board.items, [item.id]: item } } } : state),
   discardNewItem: id => set(state => {
     const board = clone(state.board)
     delete board.items[id]

@@ -14,6 +14,7 @@ import { InlineRename } from './InlineRename'
 import { boardState, useBoard } from './store'
 import { clampZoom, fitBounds, screenToWorld, uid, unionBounds, zoomAt } from './model'
 import type { Board, CanvasItem, Id, Selection, Tool, Transform, Viewport } from './model'
+import { createAutosave } from './autosave'
 import { deleteBoard, listBoards, loadBoard, saveAsset, saveBoard } from './storage'
 
 type Gesture =
@@ -22,7 +23,7 @@ type Gesture =
   | { kind: 'createEdit'; id: Id }
   | { kind: 'moveMulti'; x: number; y: number; originals: Record<Id, Transform>; started: boolean; primary: { kind: 'item' | 'frame'; id: Id } }
   | { kind: 'resize'; target: Exclude<Selection, null>; x: number; y: number; original: Transform; originalPoints?: { x: number; y: number; pressure?: number }[]; started: boolean }
-  | { kind: 'draw'; id: Id; points: { x: number; y: number; pressure: number }[] }
+  | { kind: 'draw'; id: Id; lineWidth: number; points: { x: number; y: number; pressure: number }[]; minX: number; minY: number; maxX: number; maxY: number }
   | { kind: 'frame'; id: Id; x: number; y: number }
   | { kind: 'connect'; from: Id }
 
@@ -77,7 +78,12 @@ export default function App() {
   const [connector, setConnector] = useState<{ from: Id; x: number; y: number } | null>(null)
   const [imagePosition, setImagePosition] = useState<{ x: number; y: number } | null>(null)
   const [saveState, setSaveState] = useState('Saved locally')
-  const saveTimer = useRef(0)
+  const autosave = useRef<ReturnType<typeof createAutosave>>(null)
+  autosave.current ??= createAutosave({
+    save: saveBoard,
+    hold: () => gesture.current?.kind === 'draw',
+    onStatus: status => setSaveState(status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved locally' : 'Save failed · retrying'),
+  })
   const boardOperation = useRef(false)
   const [boardBusy, setBoardBusy] = useState(false)
   const [boardMenu, setBoardMenu] = useState(false)
@@ -116,12 +122,19 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!ready || boardBusy) return
-    let active = true
-    setSaveState('Saving…')
-    saveTimer.current = window.setTimeout(() => saveBoard(board).then(() => { if (active) setSaveState('Saved locally') }).catch(() => { if (active) setSaveState('Save failed') }), 450)
-    return () => { active = false; clearTimeout(saveTimer.current) }
+    if (!ready) return
+    if (boardBusy) autosave.current!.cancel()
+    else autosave.current!.schedule(board)
   }, [board, ready, boardBusy])
+
+  useEffect(() => {
+    const flush = () => { if (document.visibilityState !== 'visible' && !boardOperation.current) void autosave.current!.flush() }
+    const hide = () => { if (!boardOperation.current) void autosave.current!.flush() }
+    document.addEventListener('visibilitychange', flush)
+    window.addEventListener('pagehide', hide)
+    const scheduler = autosave.current!
+    return () => { document.removeEventListener('visibilitychange', flush); window.removeEventListener('pagehide', hide); scheduler.cancel() }
+  }, [])
 
   const screenPoint = (event: { clientX: number; clientY: number }) => {
     const rect = root.current!.getBoundingClientRect()
@@ -388,7 +401,7 @@ export default function App() {
       const id = uid()
       const points = [{ x: w.x, y: w.y, pressure: event.pressure || .5 }]
       state.change(b => { b.items[id] = { id, type: 'drawing', points: [{ x: 0, y: 0, pressure: event.pressure || .5 }], lineWidth: 3, transform: { x: w.x, y: w.y, width: 1, height: 1 } } })
-      gesture.current = { kind: 'draw', id, points }
+      gesture.current = { kind: 'draw', id, lineWidth: 3, points, minX: w.x, minY: w.y, maxX: w.x, maxY: w.y }
     } else if (state.tool === 'image') { setImagePosition(w); fileInput.current?.click() }
     else if (state.tool === 'select') { gesture.current = { kind: 'marquee', x: p.x, y: p.y, currentX: p.x, currentY: p.y } }
   }
@@ -493,9 +506,8 @@ export default function App() {
         state.updateGesture(b => { if (b.frames[g.id]) b.frames[g.id].bounds = { x: Math.min(g.x, w.x), y: Math.min(g.y, w.y), width: Math.max(40, Math.abs(w.x-g.x)), height: Math.max(40, Math.abs(w.y-g.y)) } })
       } else if (g.kind === 'draw') {
         g.points.push({ x: w.x, y: w.y, pressure: event.pressure || .5 })
-        const minX = Math.min(...g.points.map(v => v.x)), minY = Math.min(...g.points.map(v => v.y))
-        const maxX = Math.max(...g.points.map(v => v.x)), maxY = Math.max(...g.points.map(v => v.y))
-        state.updateGesture(b => { const item = b.items[g.id]; if (item?.type === 'drawing') { item.points = g.points.map(v => ({ x: v.x-minX, y: v.y-minY, pressure: v.pressure })); item.transform = { x: minX, y: minY, width: Math.max(1,maxX-minX), height: Math.max(1,maxY-minY) } } })
+        g.minX = Math.min(g.minX, w.x); g.minY = Math.min(g.minY, w.y); g.maxX = Math.max(g.maxX, w.x); g.maxY = Math.max(g.maxY, w.y)
+        state.replaceItem({ id: g.id, type: 'drawing', lineWidth: g.lineWidth, points: g.points.map(v => ({ x: v.x-g.minX, y: v.y-g.minY, pressure: v.pressure })), transform: { x: g.minX, y: g.minY, width: Math.max(1,g.maxX-g.minX), height: Math.max(1,g.maxY-g.minY) } })
       } else if (g.kind === 'connect') setConnector({ from: g.from, x: w.x, y: w.y })
     }
     const up = (event: PointerEvent) => {
@@ -667,7 +679,7 @@ export default function App() {
   const manageBoards = async (action: () => Promise<void>) => {
     if (boardOperation.current) return
     boardOperation.current = true
-    clearTimeout(saveTimer.current)
+    autosave.current!.cancel()
     setBoardBusy(true)
     finishEditing()
     try {
