@@ -4,6 +4,8 @@ import { codeMirror } from '@milkdown/crepe/feature/code-mirror'
 import { latex } from '@milkdown/crepe/feature/latex'
 import { listItem } from '@milkdown/crepe/feature/list-item'
 import { table } from '@milkdown/crepe/feature/table'
+import { languages } from '@codemirror/language-data'
+import { flushEditor, setEditorFlush } from './editorBridge'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { Selection, TextSelection } from '@milkdown/kit/prose/state'
 import '@milkdown/crepe/theme/common/style.css'
@@ -27,11 +29,12 @@ export default function MilkdownEditor({ initial, focusPoint, onChange, onDone, 
     let disposed = false
     let created = false
     const crepe = new CrepeBuilder({ root: host.current!, defaultValue: initial })
-      .addFeature(listItem).addFeature(codeMirror).addFeature(table)
+      .addFeature(listItem).addFeature(codeMirror, { languages }).addFeature(table)
       .addFeature(latex, { katexOptions: { throwOnError: false, trust: false } })
     crepe.on(listener => listener.markdownUpdated((_, markdown) => { if (!disposed) latest.current.onChange(markdown) }))
     void crepe.create().then(() => {
       created = true
+      setEditorFlush(() => { if (!disposed) latest.current.onChange(crepe.getMarkdown()) })
       if (disposed) { void crepe.destroy(); return }
       crepe.editor.action(ctx => {
         const view = ctx.get(editorViewCtx)
@@ -48,12 +51,12 @@ export default function MilkdownEditor({ initial, focusPoint, onChange, onDone, 
       })
       latest.current.onReady(host.current!)
     }).catch(error => console.error('Markdown editor could not open', error))
-    return () => { disposed = true; if (created) void crepe.destroy() }
+    return () => { disposed = true; setEditorFlush(null); if (created) void crepe.destroy() }
     // The editor owns the document while the note is being edited.
   }, [])
 
   return <div ref={host} className="markdown-wysiwyg" onKeyDown={event => {
     event.stopPropagation()
-    if (event.key === 'Escape' || (event.key === 'Enter' && (event.metaKey || event.ctrlKey))) { event.preventDefault(); latest.current.onDone() }
+    if (event.key === 'Escape' || (event.key === 'Enter' && (event.metaKey || event.ctrlKey))) { event.preventDefault(); flushEditor(); latest.current.onDone() }
   }} />
 }

@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@codemirror/language-data':
+        specifier: ^6.5.2
+        version: 6.5.2
       '@milkdown/crepe':
         specifier: ^7.22.3
         version: 7.22.3(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.6)(typescript@5.9.3)

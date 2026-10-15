@@ -38,7 +38,7 @@ function normalizeMarkdown(text: string) {
   return text.replace(/<br\s*\/?\s*>/gi, '  \n').replace(/(^|[^\\])\\\$/g, (_, before: string) => `${before}$`)
 }
 
-function MarkdownTextEditor({ initial, minHeight, focusPoint, onChange, onDone, onHeightChange, onReady }: { initial: string; minHeight: number; focusPoint: { x: number; y: number } | null; onChange: (value: string) => void; onDone: () => void; onHeightChange?: (height: number) => void; onReady: () => void }) {
+function MarkdownTextEditor({ initial, focusPoint, onChange, onDone, onHeightChange, onReady }: { initial: string; focusPoint: { x: number; y: number } | null; onChange: (value: string) => void; onDone: () => void; onHeightChange?: (height: number) => void; onReady: () => void }) {
   const onHeightRef = useRef(onHeightChange)
   onHeightRef.current = onHeightChange
   const observer = useRef<ResizeObserver>(null)
@@ -55,7 +55,7 @@ function MarkdownTextEditor({ initial, minHeight, focusPoint, onChange, onDone, 
   const ready = (host: HTMLElement) => {
     // Measure the content itself, not the box that is stretched to fill the note.
     const content = host.querySelector<HTMLElement>('.ProseMirror') ?? host
-    const measure = () => onHeightRef.current?.(measuredTextHeight(content))
+    const measure = () => { if (content.scrollHeight) onHeightRef.current?.(measuredTextHeight(content)) }
     observer.current = new ResizeObserver(measure)
     observer.current.observe(content)
     measure()
@@ -63,7 +63,7 @@ function MarkdownTextEditor({ initial, minHeight, focusPoint, onChange, onDone, 
   }
   const change = (value: string) => { const next = normalizeMarkdown(value); setDraft(next); onChange(next) }
 
-  return <div className="markdown-text-editor" style={{ minHeight }} onKeyDown={event => event.stopPropagation()} onMouseDown={event => { if (event.target === event.currentTarget) { event.preventDefault(); event.currentTarget.querySelector<HTMLElement>('.ProseMirror')?.focus() } }}>
+  return <div className="markdown-text-editor" onKeyDown={event => event.stopPropagation()} onMouseDown={event => { if (event.target === event.currentTarget) { event.preventDefault(); event.currentTarget.querySelector<HTMLElement>('.ProseMirror')?.focus() } }}>
     {failed
       ? <textarea autoFocus spellCheck={false} aria-label="Markdown source" value={draft} onChange={event => change(event.target.value)} />
       : Editor && <Editor initial={initial} focusPoint={focusPoint} onChange={change} onDone={onDone} onReady={ready} />}
@@ -81,23 +81,25 @@ export function MarkdownText({ item, editing, onChange, onDone, onHeightChange }
   heightRef.current = item.transform.height
 
   useEffect(() => {
-    if (!item.markdown || !preview.current || !onHeightRef.current) return
+    // While editing, the editor measures its own content; measuring both would make them chase each other.
+    if (!item.markdown || editing || !preview.current || !onHeightRef.current) return
     const node = preview.current
     const measure = () => {
+      if (!node.scrollHeight) return // not laid out (hidden or detached): nothing to fit to
       const needed = measuredTextHeight(node)
-      if (needed > heightRef.current + 1) onHeightRef.current?.(needed)
+      if (Math.abs(needed - heightRef.current) > 1) onHeightRef.current?.(needed)
     }
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(node)
     return () => observer.disconnect()
-  }, [item.markdown, item.text, item.fontSize, item.transform.width])
+  }, [item.markdown, item.text, item.fontSize, item.transform.width, editing])
 
   const markdown = item.markdown ? normalizeMarkdown(item.text) : legacyToMarkdown(item.text)
   return <div className="markdown-text-shell" style={{ fontSize: item.fontSize, fontWeight: item.bold ? 600 : 400 }} onPointerDownCapture={event => { if (!editing) focusPoint.current = { x: event.clientX, y: event.clientY } }}>
     <div ref={preview} className={`text-content ${item.markdown ? 'markdown-prose' : 'legacy-text'} ${editing && editorReady ? 'text-measure' : ''}`}>
       {item.markdown ? <MarkdownPreview text={markdown} /> : item.text}
     </div>
-    {editing && <MarkdownTextEditor initial={markdown} minHeight={Math.max(0, item.transform.height - 2)} focusPoint={focusPoint.current} onChange={onChange} onDone={onDone} onHeightChange={onHeightChange} onReady={() => setEditorReady(true)} />}
+    {editing && <MarkdownTextEditor initial={markdown} focusPoint={focusPoint.current} onChange={onChange} onDone={onDone} onHeightChange={onHeightChange} onReady={() => setEditorReady(true)} />}
   </div>
 }

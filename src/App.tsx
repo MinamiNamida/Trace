@@ -15,6 +15,7 @@ import { boardState, useBoard } from './store'
 import { isBlankMarkdown, clampZoom, fitBounds, screenToWorld, uid, unionBounds, zoomAt } from './model'
 import type { Board, CanvasItem, StrokePoint, Id, Selection, Tool, Transform, Viewport } from './model'
 import { createAutosave } from './autosave'
+import { flushEditor } from './editorBridge'
 import { createBackup, downloadBackup, restoreBackup } from './backup'
 import { acceptSample, realPressure, samplesOf, MAX_PEN_WIDTH, MIN_PEN_WIDTH } from './ink'
 import type { PenSettings } from './ink'
@@ -366,6 +367,7 @@ export default function App() {
   }, [notice])
 
   const finishEditing = () => {
+    flushEditor()
     const state = boardState()
     const id = state.editing
     if (!id) return
@@ -562,6 +564,7 @@ export default function App() {
         const item = g.target.kind === 'item' ? state.board.items[g.target.id] : undefined
         let next: Transform
         if (item?.type === 'image') { const ratio = original.width / original.height; const width = Math.max(64, original.width + dx); next = { ...original, width, height: width / ratio } }
+        else if (item?.type === 'text') next = { ...original, width: Math.max(60, original.width + dx) } // a note's height always follows its content
         else next = { ...original, width: Math.max(60, original.width + dx), height: Math.max(35, original.height + dy) }
         const references = alignmentReferences(state.board, new Set([g.target.id]))
         const snapped = event.altKey ? { bounds: next, guides: [] } : snapResize(next, references, state.viewport.zoom, item?.type === 'image' ? 64 : 60, 35, item?.type === 'image' ? original.width / original.height : undefined)
@@ -898,7 +901,7 @@ export default function App() {
   if (!ready) return <div className="loading">{saveState.startsWith('Could not') ? saveState : 'Opening board…'}</div>
   return <div className={`app tool-${tool} ${panning ? 'is-panning' : ''} ${tablet ? 'tablet' : ''} ${writing ? 'writing' : ''}`}>
     <div className="canvas-surface" ref={root} onPointerDownCapture={onSurfacePointerDownCapture} onPointerDown={onBackgroundDown} onContextMenu={openContextMenu} onAuxClick={e => { if (e.button === 1) e.preventDefault() }} onDrop={onDrop} onDragOver={e => e.preventDefault()}>
-      <BoardRenderer board={board} viewport={viewport} mode="edit" selection={selection} multiSelection={multiSelection} editing={editing} onObjectDown={onObjectDown} onObjectDoubleClick={objectDoubleClick} onResizeDown={onResizeDown} onEdgeHandleDown={(event, id) => { if (event.button !== 0) return; gesturePointer.current = event.pointerId; gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }) }} onContentChange={contentChange} onTextHeightChange={(id, height) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'text' && height > item.transform.height) item.transform.height = height })} onDoneEditing={finishEditing} />
+      <BoardRenderer board={board} viewport={viewport} mode="edit" selection={selection} multiSelection={multiSelection} editing={editing} onObjectDown={onObjectDown} onObjectDoubleClick={objectDoubleClick} onResizeDown={onResizeDown} onEdgeHandleDown={(event, id) => { if (event.button !== 0) return; gesturePointer.current = event.pointerId; gesture.current = { kind: 'connect', from: id }; setConnector({ from: id, ...worldPoint(event) }) }} onContentChange={contentChange} onTextHeightChange={(id, height) => boardState().updateGesture(b => { const item = b.items[id]; if (item?.type === 'text' && Math.abs(height - item.transform.height) > 1) item.transform.height = height })} onDoneEditing={finishEditing} />
       {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
       {!!snapGuides.length && <svg className="alignment-guides" aria-hidden="true">{snapGuides.map(line => line.axis === 'x'
         ? <line key="x" x1={line.position * viewport.zoom + viewport.x} x2={line.position * viewport.zoom + viewport.x} y1={line.start * viewport.zoom + viewport.y} y2={line.end * viewport.zoom + viewport.y} />
